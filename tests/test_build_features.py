@@ -70,3 +70,47 @@ def test_build_features_higher_intervals():
 
     assert "rsi_14_4H" in features.columns
     assert "close_ma_3_4H" in features.columns
+
+
+def test_build_features_fibonacci_scheme():
+    rng = pd.date_range("2021-01-01", periods=80, freq="h")
+    base = np.linspace(100, 180, num=80)
+    df = pd.DataFrame(
+        {
+            "open": base,
+            "high": base + 1,
+            "low": base - 1,
+            "close": base + 0.5,
+            "volume": np.linspace(1000, 1079, num=80),
+        },
+        index=rng,
+    )
+
+    features = build_features(df, window_scheme="fibonacci")
+
+    assert "return_13h" in features.columns
+    assert "rsi_13" in features.columns
+
+
+def test_build_features_custom_scheme_callable():
+    rng = pd.date_range("2021-01-01", periods=60, freq="h")
+    base = np.linspace(100, 160, num=60)
+    df = pd.DataFrame(
+        {
+            "open": base,
+            "high": base + 1,
+            "low": base - 1,
+            "close": base + 0.5,
+            "volume": np.linspace(1000, 1059, num=60),
+        },
+        index=rng,
+    )
+
+    def scheme(base_windows, df):
+        return [21, 7, 7, 14]
+
+    features = build_features(df, window_scheme=scheme)
+
+    assert "rsi_7" in features.columns
+    assert "rsi_14" in features.columns
+    assert "rsi_21" in features.columns
