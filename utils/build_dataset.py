@@ -521,6 +521,7 @@ def feature_selection(
     n_features: int = 40,
     task: str = "classification",  # "classification" or "regression"
     use_gpu: bool = False,
+    log_path: str | None = None,
 ) -> pd.Index:
     """
     Robust feature selection pipeline that works for both classification and regression.
@@ -540,6 +541,7 @@ def feature_selection(
       - n_features: number of features to select via RFE/SFS
       - task: "classification" or "regression"
       - use_gpu: enable GPU accelerated estimators
+      - log_path: optional path to write feature importances CSV
     """
     start_time = time.time()
     print(f"🔍 Starting feature selection on {X.shape[1]} features for {task}...")
@@ -638,6 +640,14 @@ def feature_selection(
     )
     selector.fit(X_filtered[top_mi_features], y)
     rfe_features = X_filtered[top_mi_features].columns[selector.support_]
+
+    if log_path:
+        importances = pd.Series(
+            selector.estimator_.feature_importances_, index=rfe_features
+        ).sort_values(ascending=False)
+        df_log = importances.reset_index()
+        df_log.columns = ["feature", "importance"]
+        pd.DataFrame(df_log).to_csv(log_path, index=False)
 
     # 5) If RFE still returned too many (> 1.5 * n_features), do forward SFS
     if len(rfe_features) > n_features * 1.5:
