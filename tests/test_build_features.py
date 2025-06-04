@@ -22,6 +22,8 @@ def test_build_features_basic():
 
     assert "return_1h" in features.columns
     assert "rsi_14" in features.columns
+    assert "body_pct" in features.columns
+    assert "upper_wick_pct" in features.columns
     assert "willr_14" in features.columns
     assert "stochrsi_14" in features.columns
     assert "aroon_up_14" in features.columns
