@@ -82,18 +82,7 @@ After creating a processed dataset, train a simple model with
 `examples/train_example.py`:
 
 ```bash
-python examples/train_example.py --task classification
-```
-
-The script saves the trained model under `models/` and prints basic metrics.
-
-## Training the Classification Model
-
-For a more complete example that trains both a logistic regression and an optional XGBoost model, run:
-
-```bash
 python examples/train_classification.py
 ```
 
-The script expects the processed classification dataset in `data/processed/classification/`.  After training it reports accuracy, precision, recall, F1 and ROC-AUC scores for each model.  The logistic regression classifier is saved to `models/classification_model_v1.joblib`.
-
+The script saves the trained model under `models/` and prints basic metrics.
