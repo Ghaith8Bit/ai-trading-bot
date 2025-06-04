@@ -44,12 +44,54 @@ from sklearn.neural_network import MLPRegressor
 warnings.filterwarnings("ignore")
 
 
+def _generate_windows(base_windows, df=None, scheme=None):
+    """Return sorted and unique window sizes based on the given scheme.
+
+    Parameters
+    ----------
+    base_windows : list[int]
+        Default set of windows to fall back to.
+    df : pd.DataFrame, optional
+        DataFrame used for volatility based calculations.
+    scheme : str or callable, optional
+        ``"fibonacci"`` to use fibonacci numbers up to ``max(base_windows)`` or
+        ``"volatility"`` to scale windows based on recent volatility. A callable
+        is expected to return an iterable of window sizes.
+    """
+
+    if scheme is None:
+        windows = list(base_windows)
+    elif callable(scheme):
+        try:
+            windows = list(scheme(base_windows, df))
+        except TypeError:
+            windows = list(scheme(base_windows))
+    elif scheme == "fibonacci":
+        max_w = max(base_windows)
+        fib = [1, 2]
+        while fib[-1] < max_w:
+            fib.append(fib[-1] + fib[-2])
+        windows = [w for w in fib if w <= max_w]
+    elif scheme == "volatility":
+        if df is None or "close" not in df.columns:
+            windows = list(base_windows)
+        else:
+            vol = df["close"].pct_change().rolling(24).std().mean()
+            factor = 1 if pd.isna(vol) else float(min(max(vol * 50, 0.5), 2.0))
+            windows = [int(max(1, round(w * factor))) for w in base_windows]
+    else:
+        windows = list(base_windows)
+
+    return sorted(set(int(w) for w in windows if w > 0))
+
+
 def build_features(
     df_raw: pd.DataFrame,
     min_periods: int = 24,
     unsupervised: bool = False,
     higher_intervals: list[str] | None = None,
     extra_data: dict[str, pd.DataFrame] | None = None,
+    window_scheme=None,
 ) -> pd.DataFrame:
     """
     Enhanced feature engineering (long-only) — constructs a wide range of technical
@@ -72,6 +114,9 @@ def build_features(
         resample the raw data and add coarse features.
     extra_data:
         Optional dictionary of additional market data dataframes keyed by name.
+    window_scheme:
+        Optional scheme name ("fibonacci" or "volatility") or callable used to
+        generate rolling window sizes.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
@@ -163,7 +208,7 @@ def build_features(
     r1 = df["close"].pct_change(1)
     ret_vol_cols = {"return_1h": r1}
 
-    for window in [2, 4, 8, 12, 24, 48, 72]:
+    for window in _generate_windows([2, 4, 8, 12, 24, 48, 72], df, window_scheme):
         current_min_periods = min(min_periods, window)
         ret_vol_cols[f"return_{window}h"] = df["close"].pct_change(window)
         ret_vol_cols[f"volatility_{window}"] = (
@@ -214,22 +259,34 @@ def build_features(
     # Momentum Indicators
     # ======================
     momentum_cols = {}
-    for w in [7, 14, 21]:
+    for w in _generate_windows([7, 14, 21], df, window_scheme):
         momentum_cols[f"rsi_{w}"] = RSIIndicator(df["close"], window=w).rsi()
         stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=w)
         momentum_cols[f"stoch_k_{w}"] = stoch.stoch()
         momentum_cols[f"stoch_d_{w}"] = stoch.stoch_signal()
 
-    for w in [10, 14, 20]:
+    for w in _generate_windows([10, 14, 20], df, window_scheme):
         momentum_cols[f"roc_{w}"] = ROCIndicator(df["close"], window=w).roc()
 
-    for w in [7, 14, 21]:
+    for w in _generate_windows([7, 14, 21], df, window_scheme):
         momentum_cols[f"willr_{w}"] = WilliamsRIndicator(
             df["high"], df["low"], df["close"], lbp=w
         ).williams_r()
         momentum_cols[f"stochrsi_{w}"] = StochRSIIndicator(df["close"], window=w).stochrsi()
 
-    for fast, slow in [(12, 26), (10, 20), (8, 16)]:
+    macd_pairs_base = [(12, 26), (10, 20), (8, 16)]
+    macd_windows = _generate_windows(
+        [w for pair in macd_pairs_base for w in pair],
+        df,
+        window_scheme,
+    )
+    macd_pairs = [
+        (macd_windows[i], macd_windows[i + 1])
+        for i in range(0, len(macd_windows) - 1, 2)
+    ]
+    if not macd_pairs:
+        macd_pairs = macd_pairs_base
+    for fast, slow in macd_pairs:
         macd = MACD(df["close"], window_slow=slow, window_fast=fast)
         momentum_cols[f"macd_{fast}_{slow}"] = macd.macd()
         momentum_cols[f"macd_signal_{fast}_{slow}"] = macd.macd_signal()
@@ -241,14 +298,14 @@ def build_features(
     # Trend Indicators
     # ======================
     trend_cols = {}
-    for w in [14, 20, 28]:
+    for w in _generate_windows([14, 20, 28], df, window_scheme):
         adx = ADXIndicator(df["high"], df["low"], df["close"], window=w)
         trend_cols[f"adx_{w}"] = adx.adx()
         trend_cols[f"di_plus_{w}"] = adx.adx_pos()
         trend_cols[f"di_minus_{w}"] = adx.adx_neg()
         trend_cols[f"cci_{w}"] = CCIIndicator(df["high"], df["low"], df["close"], window=w).cci()
 
-    for w in [14, 20, 28]:
+    for w in _generate_windows([14, 20, 28], df, window_scheme):
         aroon = AroonIndicator(df["high"], df["low"], window=w)
         trend_cols[f"aroon_up_{w}"] = aroon.aroon_up()
         trend_cols[f"aroon_down_{w}"] = aroon.aroon_down()
@@ -259,7 +316,7 @@ def build_features(
     # Volatility Indicators
     # ======================
     vol_ind_cols = {}
-    for window in [10, 20, 50]:
+    for window in _generate_windows([10, 20, 50], df, window_scheme):
         bb = BollingerBands(df["close"], window=window, window_dev=2)
         upper = bb.bollinger_hband()
         lower = bb.bollinger_lband()
@@ -267,7 +324,7 @@ def build_features(
         vol_ind_cols[f"bb_lower_{window}"] = lower
         vol_ind_cols[f"bb_width_{window}"] = (upper - lower) / upper.replace(0, np.nan)
 
-    for w in [7, 14, 21]:
+    for w in _generate_windows([7, 14, 21], df, window_scheme):
         vol_ind_cols[f"atr_{w}"] = AverageTrueRange(
             df["high"], df["low"], df["close"], window=w
         ).average_true_range()
@@ -289,12 +346,12 @@ def build_features(
         "adi": AccDistIndexIndicator(df["high"], df["low"], df["close"], df["volume"]).acc_dist_index(),
     }
 
-    for w in [14, 20]:
+    for w in _generate_windows([14, 20], df, window_scheme):
         vol_cols[f"mfi_{w}"] = MFIIndicator(
             df["high"], df["low"], df["close"], df["volume"], window=w
         ).money_flow_index()
 
-    for w in [12, 24, 48]:
+    for w in _generate_windows([12, 24, 48], df, window_scheme):
         vol_roll_mean = df["volume"].rolling(w).mean()
         vol_roll_std = df["volume"].rolling(w).std().replace(0, 1e-6)
         vol_cols[f"volume_z_{w}"] = (df["volume"] - vol_roll_mean) / vol_roll_std
@@ -376,20 +433,29 @@ def build_features(
     # ======================
     # Advanced Interaction Features
     # ======================
+    rsi_w = max(_generate_windows([14], df, window_scheme))
+    vol_w = max(_generate_windows([24], df, window_scheme))
+    macd_fast = max(_generate_windows([12], df, window_scheme))
+    macd_slow = max(_generate_windows([26], df, window_scheme))
+    rsi_col = f"rsi_{rsi_w}"
+    vol_col = f"volatility_{vol_w}"
+    macd_col = f"macd_{macd_fast}_{macd_slow}"
+    adx_col = f"adx_{rsi_w}"
+
     inter_cols = {
-        "rsi_vol": df["rsi_14"] * df["volatility_24"],
-        "macd_vol": df["macd_12_26"] * df["volatility_24"],
-        "adx_vol": df["adx_14"] * df["volatility_24"],
+        "rsi_vol": df[rsi_col] * df[vol_col],
+        "macd_vol": df.get(macd_col, pd.Series(index=df.index)) * df[vol_col],
+        "adx_vol": df[adx_col] * df[vol_col],
     }
 
     for w in [3, 5]:
         inter_cols[f"price_rsi_div_{w}"] = (
             (df["close"].diff(w) / df["close"].shift(w).replace(0, np.nan))
-            - (df["rsi_14"].diff(w) / 100)
+            - (df[rsi_col].diff(w) / 100)
         )
         inter_cols[f"price_macd_div_{w}"] = (
             (df["close"].diff(w) / df["close"].shift(w).replace(0, np.nan))
-            - df["macd_12_26"].diff(w)
+            - df.get(macd_col, pd.Series(index=df.index)).diff(w)
         )
 
     df = df.assign(**inter_cols)
@@ -397,7 +463,7 @@ def build_features(
     # ======================
     # Volatility Regime (One-Hot)
     # ======================
-    vol_series = df["volatility_24"].copy()
+    vol_series = df[vol_col].copy()
     regime_cols = {
         "vol_regime_low": 0,
         "vol_regime_medium": 0,
@@ -435,15 +501,22 @@ def build_features(
     # ======================
     roll_cols = {}
     for window in [6, 12, 24]:
-        for col in ["rsi_14", "macd_12_26", "volume"]:
-            roll_cols[f"{col}_ma_{window}"] = df[col].rolling(window).mean()
-            roll_cols[f"{col}_std_{window}"] = df[col].rolling(window).std()
+        for col in [rsi_col, macd_col, "volume"]:
+            if col in df.columns:
+                roll_cols[f"{col}_ma_{window}"] = df[col].rolling(window).mean()
+                roll_cols[f"{col}_std_{window}"] = df[col].rolling(window).std()
     df = df.assign(**roll_cols)
 
     # ======================
     # Market Regime Detection via Bayesian GMM
     # ======================
-    regime_features = ["return_1h", "volatility_24", "rsi_14", "volume_z_24"]
+    volume_z_window = max(_generate_windows([24], df, window_scheme))
+    regime_features = [
+        "return_1h",
+        vol_col,
+        rsi_col,
+        f"volume_z_{volume_z_window}",
+    ]
     regime_data = df[regime_features].dropna()
 
     if len(regime_data) > 1000:
