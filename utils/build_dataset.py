@@ -36,15 +36,21 @@ from sklearn.feature_selection import (
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, GradientBoostingRegressor, RandomForestRegressor
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPRegressor
 
 warnings.filterwarnings("ignore")
 
 
-def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
+def build_features(
+    df_raw: pd.DataFrame, min_periods: int = 24, unsupervised: bool = False
+) -> pd.DataFrame:
     """
     Enhanced feature engineering (long-only)—constructs a wide range of technical indicators,
     rolling stats, regime labels, and cyclical features. Returns a DataFrame indexed by timestamp
     with all numeric columns (no raw OHLCV except volume is used to compute indicators).
+
+    If `unsupervised` is True, additional components from a wavelet transform and a tiny
+    autoencoder on the closing price are appended as features.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
@@ -188,6 +194,49 @@ def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
         (df["volume"] - df["volume"].rolling(20).mean())
         * (df["close"] - df["close"].rolling(20).mean())
     )
+
+    # ======================
+    # Optional Unsupervised Features
+    # ======================
+    if unsupervised:
+        try:
+            import pywt
+
+            coeffs = pywt.swt(df["close"], "db1", level=2)
+            for idx, (_, cD) in enumerate(coeffs, start=1):
+                df[f"wavelet_c{idx}"] = cD
+        except Exception as e:
+            print(f"⚠️ Wavelet transform failed: {e}")
+
+        try:
+            ae_window = 10
+            close_series = df["close"]
+            window_matrix = np.column_stack([
+                close_series.shift(i) for i in range(ae_window)
+            ])
+            mask = ~np.isnan(window_matrix).any(axis=1)
+            scaler_ae = StandardScaler()
+            X_train = scaler_ae.fit_transform(window_matrix[mask])
+
+            ae = MLPRegressor(
+                hidden_layer_sizes=(3,),
+                max_iter=200,
+                random_state=42,
+                solver="lbfgs",
+            )
+            ae.fit(X_train, X_train)
+
+            window_all = np.column_stack([
+                close_series.shift(i).fillna(method="bfill").fillna(method="ffill").values
+                for i in range(ae_window)
+            ])
+            X_all_scaled = scaler_ae.transform(window_all)
+            hidden = np.maximum(0, np.dot(X_all_scaled, ae.coefs_[0]) + ae.intercepts_[0])
+
+            for j in range(hidden.shape[1]):
+                df[f"ae_feat{j+1}"] = hidden[:, j]
+        except Exception as e:
+            print(f"⚠️ Autoencoder feature extraction failed: {e}")
 
     # ======================
     # Time & Cyclical Features

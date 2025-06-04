@@ -30,3 +30,18 @@ generate_dataset(
 
 If `use_gpu` is disabled (default), CPU implementations are used.
 
+## Unsupervised Feature Extraction
+
+`build_features` now accepts an optional `unsupervised=True` flag to add a few
+wavelet- and autoencoder-based components derived from the closing price. These
+features can capture additional structure in the price series.
+
+Example:
+
+```python
+from utils.build_dataset import build_features
+
+df = pd.read_csv("prices.csv", parse_dates=["timestamp"], index_col="timestamp")
+features = build_features(df, unsupervised=True)
+```
+

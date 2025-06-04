@@ -24,3 +24,23 @@ def test_build_features_basic():
     assert "rsi_14" in features.columns
     assert pd.api.types.is_numeric_dtype(features["return_1h"])
     assert pd.api.types.is_numeric_dtype(features["rsi_14"])
+
+
+def test_build_features_unsupervised():
+    rng = pd.date_range("2021-01-01", periods=64, freq="H")
+    base = np.linspace(100, 164, num=64)
+    df = pd.DataFrame(
+        {
+            "open": base,
+            "high": base + 1,
+            "low": base - 1,
+            "close": base + 0.5,
+            "volume": np.linspace(1000, 1063, num=64),
+        },
+        index=rng,
+    )
+
+    features = build_features(df, unsupervised=True)
+
+    assert "wavelet_c1" in features.columns
+    assert any(col.startswith("ae_feat") for col in features.columns)
