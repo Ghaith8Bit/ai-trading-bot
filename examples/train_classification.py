@@ -19,7 +19,8 @@ import seaborn as sns
 
 
 def main():
-    base = Path("data/processed/classification")
+    repo_root = Path(__file__).resolve().parents[1]
+    base = repo_root / "data/processed/classification"
     X = pd.read_parquet(base / "X_v1.parquet")
     y = pd.read_parquet(base / "y_v1.parquet").squeeze()
 
