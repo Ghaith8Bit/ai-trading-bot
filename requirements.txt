@@ -10,3 +10,5 @@ seaborn
 jupyter
 joblib
 PyWavelets
+category_encoders
+pyarrow

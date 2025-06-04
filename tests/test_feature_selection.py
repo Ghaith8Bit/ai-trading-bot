@@ -75,3 +75,24 @@ def test_feature_selection_permutation_pruning():
                 )
 
     assert len(selected) == 4
+
+def test_feature_selection_time_cv_invoked():
+    X, y = _dummy_data()
+    with patch("utils.build_dataset.TimeSeriesSplit") as mock_split:
+        feature_selection(X, y, n_features=5, task="classification", group_by_time=True)
+        assert mock_split.called
+
+def test_feature_selection_logs(tmp_path):
+    X, y = _dummy_data()
+    log_file = tmp_path / "fs_log.csv"
+    selected = feature_selection(
+        X,
+        y,
+        n_features=3,
+        task="classification",
+        use_gpu=False,
+        log_path=str(log_file),
+    )
+    df = pd.read_csv(log_file)
+    assert list(df.columns) == ["feature", "importance"]
+    assert set(df["feature"]) == set(selected)
