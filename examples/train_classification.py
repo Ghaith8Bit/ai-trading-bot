@@ -8,6 +8,8 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
+    confusion_matrix,
+    classification_report,
 )
 
 
@@ -24,28 +26,69 @@ def main():
 
     lr = LogisticRegression(max_iter=1000)
     lr.fit(X_train, y_train)
-    lr_preds = lr.predict(X_test)
-    lr_proba = lr.predict_proba(X_test)[:, 1]
-    print("LogisticRegression Metrics:")
-    print(f"  Accuracy: {accuracy_score(y_test, lr_preds):.4f}")
-    print(f"  Precision: {precision_score(y_test, lr_preds):.4f}")
-    print(f"  Recall: {recall_score(y_test, lr_preds):.4f}")
-    print(f"  F1: {f1_score(y_test, lr_preds):.4f}")
-    print(f"  ROC-AUC: {roc_auc_score(y_test, lr_proba):.4f}")
+    lr_train_preds = lr.predict(X_train)
+    lr_train_proba = lr.predict_proba(X_train)[:, 1]
+    lr_test_preds = lr.predict(X_test)
+    lr_test_proba = lr.predict_proba(X_test)[:, 1]
+    train_metrics = {
+        "accuracy": accuracy_score(y_train, lr_train_preds),
+        "precision": precision_score(y_train, lr_train_preds),
+        "recall": recall_score(y_train, lr_train_preds),
+        "f1": f1_score(y_train, lr_train_preds),
+        "roc_auc": roc_auc_score(y_train, lr_train_proba),
+    }
+    test_metrics = {
+        "accuracy": accuracy_score(y_test, lr_test_preds),
+        "precision": precision_score(y_test, lr_test_preds),
+        "recall": recall_score(y_test, lr_test_preds),
+        "f1": f1_score(y_test, lr_test_preds),
+        "roc_auc": roc_auc_score(y_test, lr_test_proba),
+    }
+    print("LogisticRegression Train Metrics:")
+    for k, v in train_metrics.items():
+        print(f"  {k.capitalize()}: {v:.4f}")
+    print("LogisticRegression Test Metrics:")
+    for k, v in test_metrics.items():
+        print(f"  {k.capitalize()}: {v:.4f}")
+    print("LogisticRegression Test Confusion Matrix:")
+    print(confusion_matrix(y_test, lr_test_preds))
+    print("LogisticRegression Test Classification Report:")
+    print(classification_report(y_test, lr_test_preds))
 
     try:
         from xgboost import XGBClassifier
 
         xgb = XGBClassifier(use_label_encoder=False, eval_metric="logloss")
         xgb.fit(X_train, y_train)
-        xgb_preds = xgb.predict(X_test)
-        xgb_proba = xgb.predict_proba(X_test)[:, 1]
-        print("XGBClassifier Metrics:")
-        print(f"  Accuracy: {accuracy_score(y_test, xgb_preds):.4f}")
-        print(f"  Precision: {precision_score(y_test, xgb_preds):.4f}")
-        print(f"  Recall: {recall_score(y_test, xgb_preds):.4f}")
-        print(f"  F1: {f1_score(y_test, xgb_preds):.4f}")
-        print(f"  ROC-AUC: {roc_auc_score(y_test, xgb_proba):.4f}")
+        xgb_train_preds = xgb.predict(X_train)
+        xgb_train_proba = xgb.predict_proba(X_train)[:, 1]
+        xgb_test_preds = xgb.predict(X_test)
+        xgb_test_proba = xgb.predict_proba(X_test)[:, 1]
+
+        train_metrics = {
+            "accuracy": accuracy_score(y_train, xgb_train_preds),
+            "precision": precision_score(y_train, xgb_train_preds),
+            "recall": recall_score(y_train, xgb_train_preds),
+            "f1": f1_score(y_train, xgb_train_preds),
+            "roc_auc": roc_auc_score(y_train, xgb_train_proba),
+        }
+        test_metrics = {
+            "accuracy": accuracy_score(y_test, xgb_test_preds),
+            "precision": precision_score(y_test, xgb_test_preds),
+            "recall": recall_score(y_test, xgb_test_preds),
+            "f1": f1_score(y_test, xgb_test_preds),
+            "roc_auc": roc_auc_score(y_test, xgb_test_proba),
+        }
+        print("XGBClassifier Train Metrics:")
+        for k, v in train_metrics.items():
+            print(f"  {k.capitalize()}: {v:.4f}")
+        print("XGBClassifier Test Metrics:")
+        for k, v in test_metrics.items():
+            print(f"  {k.capitalize()}: {v:.4f}")
+        print("XGBClassifier Test Confusion Matrix:")
+        print(confusion_matrix(y_test, xgb_test_preds))
+        print("XGBClassifier Test Classification Report:")
+        print(classification_report(y_test, xgb_test_preds))
     except Exception as e:
         print(f"XGBClassifier not available: {e}")
 
