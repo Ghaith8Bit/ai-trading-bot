@@ -13,12 +13,15 @@ from ta.volatility import (
 from ta.momentum import (
     RSIIndicator,
     StochasticOscillator,
-    ROCIndicator
+    ROCIndicator,
+    WilliamsRIndicator,
+    StochRSIIndicator,
 )
 from ta.trend import (
     MACD,
     ADXIndicator,
-    CCIIndicator
+    CCIIndicator,
+    AroonIndicator,
 )
 from ta.volume import (
     OnBalanceVolumeIndicator,
@@ -48,7 +51,6 @@ def build_features(
     Enhanced feature engineering (long-only)—constructs a wide range of technical indicators,
     rolling stats, regime labels, and cyclical features. Returns a DataFrame indexed by timestamp
     with all numeric columns (no raw OHLCV except volume is used to compute indicators).
-
     If `unsupervised` is True, additional components from a wavelet transform and a tiny
     autoencoder on the closing price are appended as features.
     """
@@ -67,133 +69,220 @@ def build_features(
         df["volume"] = 1.0  # default to 1 if volume is missing
 
     # ======================
+    # Higher Interval Features
+    # ======================
+    if higher_intervals:
+        for interval in higher_intervals:
+            agg = {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+            resampled = df_raw.resample(interval).agg(agg)
+
+            suffix = f"_{interval}"
+
+            resampled[f"close_ma_3{suffix}"] = (
+                resampled["close"].rolling(3, min_periods=1).mean()
+            )
+            resampled[f"close_ma_6{suffix}"] = (
+                resampled["close"].rolling(6, min_periods=1).mean()
+            )
+            resampled[f"rsi_14{suffix}"] = RSIIndicator(
+                resampled["close"], window=14
+            ).rsi()
+
+            features_to_add = resampled[[
+                f"close_ma_3{suffix}",
+                f"close_ma_6{suffix}",
+                f"rsi_14{suffix}",
+            ]]
+            features_to_add = features_to_add.reindex(df.index, method="ffill")
+            df = df.join(features_to_add)
+
+    # ======================
     # Core Price Transformations
     # ======================
-    df["hl2"] = (df["high"] + df["low"]) / 2
-    df["hlc3"] = (df["high"] + df["low"] + df["close"]) / 3
-    df["ohlc4"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+    price_cols = {
+        "hl2": (df["high"] + df["low"]) / 2,
+        "hlc3": (df["high"] + df["low"] + df["close"]) / 3,
+        "ohlc4": (df["open"] + df["high"] + df["low"] + df["close"]) / 4,
+    }
+    df = df.assign(**price_cols)
+
+    # ======================
+    # Candlestick Patterns
+    # ======================
+    price_range = (df["high"] - df["low"]).replace(0, np.nan)
+    df["body_pct"] = (df["close"] - df["open"]).abs() / price_range
+    df["upper_wick_pct"] = (df["high"] - df[["open", "close"]].max(axis=1)) / price_range
+    df["lower_wick_pct"] = (df[["open", "close"]].min(axis=1) - df["low"]) / price_range
+
+    df["doji"] = (df["body_pct"] < 0.1).astype(int)
+    df["bull_engulf"] = (
+        (df["close"] > df["open"]) &
+        (df["close"].shift(1) < df["open"].shift(1)) &
+        (df["open"] <= df["close"].shift(1)) &
+        (df["close"] >= df["open"].shift(1))
+    ).astype(int)
+    df["bear_engulf"] = (
+        (df["close"] < df["open"]) &
+        (df["close"].shift(1) > df["open"].shift(1)) &
+        (df["open"] >= df["close"].shift(1)) &
+        (df["close"] <= df["open"].shift(1))
+    ).astype(int)
 
     # ======================
     # Returns & Volatility
     # ======================
-    df["return_1h"] = df["close"].pct_change(1)
+    r1 = df["close"].pct_change(1)
+    ret_vol_cols = {"return_1h": r1}
 
     for window in [2, 4, 8, 12, 24, 48, 72]:
         current_min_periods = min(min_periods, window)
-        df[f"return_{window}h"] = df["close"].pct_change(window)
-        df[f"volatility_{window}"] = (
-            df["return_1h"]
-            .rolling(window, min_periods=current_min_periods)
-            .std()
+        ret_vol_cols[f"return_{window}h"] = df["close"].pct_change(window)
+        ret_vol_cols[f"volatility_{window}"] = (
+            r1.rolling(window, min_periods=current_min_periods).std()
         )
-        df[f"close_ma_{window}"] = (
-            df["close"]
-            .rolling(window, min_periods=current_min_periods)
-            .mean()
+        ret_vol_cols[f"close_ma_{window}"] = (
+            df["close"].rolling(window, min_periods=current_min_periods).mean()
         )
-        df[f"volume_ma_{window}"] = (
-            df["volume"]
-            .rolling(window, min_periods=current_min_periods)
-            .mean()
+        ret_vol_cols[f"volume_ma_{window}"] = (
+            df["volume"].rolling(window, min_periods=current_min_periods).mean()
         )
 
+    df = df.assign(**ret_vol_cols)
+
     # Advanced volatility
-    df["volatility_ewm"] = (
-        df["return_1h"]
-        .ewm(span=24, adjust=False, min_periods=min_periods)
-        .std()
-    )
-    df["garch_vol"] = np.sqrt(
-        (df["return_1h"] ** 2).ewm(alpha=0.1, min_periods=10).mean()
-    )
+    adv_vol_cols = {
+        "volatility_ewm": r1.ewm(span=24, adjust=False, min_periods=min_periods).std(),
+        "garch_vol": np.sqrt((r1 ** 2).ewm(alpha=0.1, min_periods=10).mean()),
+    }
+    df = df.assign(**adv_vol_cols)
+
+    # ======================
+    # Additional Market Data
+    # ======================
+    if extra_data:
+        for name, extra_df in extra_data.items():
+            edf = extra_df.copy()
+            edf = edf[~edf.index.duplicated(keep="first")]
+            edf.sort_index(inplace=True)
+            if "close" not in edf.columns:
+                raise ValueError(f"Extra dataframe '{name}' missing 'close' column")
+
+            feats = pd.DataFrame(index=edf.index)
+            feats[f"return_1h_{name}"] = edf["close"].pct_change(1)
+            feats[f"return_24h_{name}"] = edf["close"].pct_change(24)
+            feats[f"close_ma_24_{name}"] = (
+                edf["close"].rolling(24, min_periods=min_periods).mean()
+            )
+
+            feats = feats.reindex(df.index)
+            df = df.join(feats, how="left")
 
     # ======================
     # Momentum Indicators
     # ======================
+    momentum_cols = {}
     for w in [7, 14, 21]:
-        df[f"rsi_{w}"] = RSIIndicator(df["close"], window=w).rsi()
-        stoch = StochasticOscillator(
-            df["high"], df["low"], df["close"], window=w
-        )
-        df[f"stoch_k_{w}"] = stoch.stoch()
-        df[f"stoch_d_{w}"] = stoch.stoch_signal()
+        momentum_cols[f"rsi_{w}"] = RSIIndicator(df["close"], window=w).rsi()
+        stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=w)
+        momentum_cols[f"stoch_k_{w}"] = stoch.stoch()
+        momentum_cols[f"stoch_d_{w}"] = stoch.stoch_signal()
 
     for w in [10, 14, 20]:
-        df[f"roc_{w}"] = ROCIndicator(df["close"], window=w).roc()
+        momentum_cols[f"roc_{w}"] = ROCIndicator(df["close"], window=w).roc()
+
+    for w in [7, 14, 21]:
+        momentum_cols[f"willr_{w}"] = WilliamsRIndicator(
+            df["high"], df["low"], df["close"], lbp=w
+        ).williams_r()
+        momentum_cols[f"stochrsi_{w}"] = StochRSIIndicator(df["close"], window=w).stochrsi()
 
     for fast, slow in [(12, 26), (10, 20), (8, 16)]:
-        macd = MACD(
-            df["close"], window_slow=slow, window_fast=fast
-        )
-        df[f"macd_{fast}_{slow}"] = macd.macd()
-        df[f"macd_signal_{fast}_{slow}"] = macd.macd_signal()
-        df[f"macd_hist_{fast}_{slow}"] = macd.macd_diff()
+        macd = MACD(df["close"], window_slow=slow, window_fast=fast)
+        momentum_cols[f"macd_{fast}_{slow}"] = macd.macd()
+        momentum_cols[f"macd_signal_{fast}_{slow}"] = macd.macd_signal()
+        momentum_cols[f"macd_hist_{fast}_{slow}"] = macd.macd_diff()
+
+    df = df.assign(**momentum_cols)
 
     # ======================
     # Trend Indicators
     # ======================
+    trend_cols = {}
     for w in [14, 20, 28]:
         adx = ADXIndicator(df["high"], df["low"], df["close"], window=w)
-        df[f"adx_{w}"] = adx.adx()
-        df[f"di_plus_{w}"] = adx.adx_pos()
-        df[f"di_minus_{w}"] = adx.adx_neg()
-        df[f"cci_{w}"] = CCIIndicator(df["high"], df["low"], df["close"], window=w).cci()
+        trend_cols[f"adx_{w}"] = adx.adx()
+        trend_cols[f"di_plus_{w}"] = adx.adx_pos()
+        trend_cols[f"di_minus_{w}"] = adx.adx_neg()
+        trend_cols[f"cci_{w}"] = CCIIndicator(df["high"], df["low"], df["close"], window=w).cci()
+
+    for w in [14, 20, 28]:
+        aroon = AroonIndicator(df["high"], df["low"], window=w)
+        trend_cols[f"aroon_up_{w}"] = aroon.aroon_up()
+        trend_cols[f"aroon_down_{w}"] = aroon.aroon_down()
+
+    df = df.assign(**trend_cols)
 
     # ======================
     # Volatility Indicators
     # ======================
+    vol_ind_cols = {}
     for window in [10, 20, 50]:
         bb = BollingerBands(df["close"], window=window, window_dev=2)
-        df[f"bb_upper_{window}"] = bb.bollinger_hband()
-        df[f"bb_lower_{window}"] = bb.bollinger_lband()
-        df[f"bb_width_{window}"] = (
-            (df[f"bb_upper_{window}"] - df[f"bb_lower_{window}"])
-            / df[f"bb_upper_{window}"].replace(0, np.nan)
-        )
+        upper = bb.bollinger_hband()
+        lower = bb.bollinger_lband()
+        vol_ind_cols[f"bb_upper_{window}"] = upper
+        vol_ind_cols[f"bb_lower_{window}"] = lower
+        vol_ind_cols[f"bb_width_{window}"] = (upper - lower) / upper.replace(0, np.nan)
 
     for w in [7, 14, 21]:
-        df[f"atr_{w}"] = AverageTrueRange(
+        vol_ind_cols[f"atr_{w}"] = AverageTrueRange(
             df["high"], df["low"], df["close"], window=w
         ).average_true_range()
 
         kc = KeltnerChannel(df["high"], df["low"], df["close"], window=w)
-        df[f"kc_upper_{w}"] = kc.keltner_channel_hband()
-        df[f"kc_lower_{w}"] = kc.keltner_channel_lband()
-        df[f"kc_width_{w}"] = (
-            (df[f"kc_upper_{w}"] - df[f"kc_lower_{w}"])
-            / df[f"kc_upper_{w}"].replace(0, np.nan)
-        )
+        kc_upper = kc.keltner_channel_hband()
+        kc_lower = kc.keltner_channel_lband()
+        vol_ind_cols[f"kc_upper_{w}"] = kc_upper
+        vol_ind_cols[f"kc_lower_{w}"] = kc_lower
+        vol_ind_cols[f"kc_width_{w}"] = (kc_upper - kc_lower) / kc_upper.replace(0, np.nan)
+
+    df = df.assign(**vol_ind_cols)
 
     # ======================
     # Volume Indicators
     # ======================
-    df["obv"] = OnBalanceVolumeIndicator(
-        df["close"], df["volume"]
-    ).on_balance_volume()
-    df["adi"] = AccDistIndexIndicator(
-        df["high"], df["low"], df["close"], df["volume"]
-    ).acc_dist_index()
+    vol_cols = {
+        "obv": OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume(),
+        "adi": AccDistIndexIndicator(df["high"], df["low"], df["close"], df["volume"]).acc_dist_index(),
+    }
 
     for w in [14, 20]:
-        df[f"mfi_{w}"] = MFIIndicator(
+        vol_cols[f"mfi_{w}"] = MFIIndicator(
             df["high"], df["low"], df["close"], df["volume"], window=w
         ).money_flow_index()
 
     for w in [12, 24, 48]:
         vol_roll_mean = df["volume"].rolling(w).mean()
         vol_roll_std = df["volume"].rolling(w).std().replace(0, 1e-6)
-        df[f"volume_z_{w}"] = (df["volume"] - vol_roll_mean) / vol_roll_std
-        df[f"volume_roc_{w}"] = df["volume"].pct_change(w)
+        vol_cols[f"volume_z_{w}"] = (df["volume"] - vol_roll_mean) / vol_roll_std
+        vol_cols[f"volume_roc_{w}"] = df["volume"].pct_change(w)
 
-    # Volume-Price Divergence
-    df["vpd_5"] = (
+    vol_cols["vpd_5"] = (
         (df["volume"] - df["volume"].rolling(5).mean())
         * (df["close"] - df["close"].rolling(5).mean())
     )
-    df["vpd_20"] = (
+    vol_cols["vpd_20"] = (
         (df["volume"] - df["volume"].rolling(20).mean())
         * (df["close"] - df["close"].rolling(20).mean())
     )
+
+    df = df.assign(**vol_cols)
 
     # ======================
     # Optional Unsupervised Features
@@ -241,66 +330,84 @@ def build_features(
     # ======================
     # Time & Cyclical Features
     # ======================
-    df["hour"] = df.index.hour
-    df["dow"] = df.index.dayofweek
-    df["month"] = df.index.month
+    time_cols = {
+        "hour": df.index.hour,
+        "dow": df.index.dayofweek,
+        "month": df.index.month,
+    }
 
     for col, period in [("hour", 24), ("dow", 7), ("month", 12)]:
-        df[f"{col}_sin"] = np.sin(2 * np.pi * df[col] / period)
-        df[f"{col}_cos"] = np.cos(2 * np.pi * df[col] / period)
+        time_cols[f"{col}_sin"] = np.sin(2 * np.pi * time_cols[col] / period)
+        time_cols[f"{col}_cos"] = np.cos(2 * np.pi * time_cols[col] / period)
+
+    df = df.assign(**time_cols)
 
     # ======================
     # Advanced Interaction Features
     # ======================
-    df["rsi_vol"] = df["rsi_14"] * df["volatility_24"]
-    df["macd_vol"] = df["macd_12_26"] * df["volatility_24"]
-    df["adx_vol"] = df["adx_14"] * df["volatility_24"]
+    inter_cols = {
+        "rsi_vol": df["rsi_14"] * df["volatility_24"],
+        "macd_vol": df["macd_12_26"] * df["volatility_24"],
+        "adx_vol": df["adx_14"] * df["volatility_24"],
+    }
 
     for w in [3, 5]:
-        df[f"price_rsi_div_{w}"] = (
+        inter_cols[f"price_rsi_div_{w}"] = (
             (df["close"].diff(w) / df["close"].shift(w).replace(0, np.nan))
             - (df["rsi_14"].diff(w) / 100)
         )
-        df[f"price_macd_div_{w}"] = (
+        inter_cols[f"price_macd_div_{w}"] = (
             (df["close"].diff(w) / df["close"].shift(w).replace(0, np.nan))
             - df["macd_12_26"].diff(w)
         )
+
+    df = df.assign(**inter_cols)
 
     # ======================
     # Volatility Regime (One-Hot)
     # ======================
     vol_series = df["volatility_24"].copy()
-    df["vol_regime_low"] = 0
-    df["vol_regime_medium"] = 0
-    df["vol_regime_high"] = 0
+    regime_cols = {
+        "vol_regime_low": 0,
+        "vol_regime_medium": 0,
+        "vol_regime_high": 0,
+    }
 
     if len(vol_series.dropna()) > 100:
         low_threshold = vol_series.expanding(min_periods=100).quantile(0.25)
         high_threshold = vol_series.expanding(min_periods=100).quantile(0.75)
 
-        df["vol_regime_low"] = (vol_series < low_threshold).fillna(0).astype(int)
-        df["vol_regime_medium"] = (
+        regime_cols["vol_regime_low"] = (vol_series < low_threshold).fillna(0).astype(int)
+        regime_cols["vol_regime_medium"] = (
             (vol_series >= low_threshold) & (vol_series <= high_threshold)
         ).fillna(0).astype(int)
-        df["vol_regime_high"] = (vol_series > high_threshold).fillna(0).astype(int)
+        regime_cols["vol_regime_high"] = (vol_series > high_threshold).fillna(0).astype(int)
+
+    df = df.assign(**regime_cols)
 
     # ======================
     # Lagged Features (numeric only)
     # ======================
     numerical_cols = df.select_dtypes(include=[np.number]).columns
+    lag_cols = {}
     for feature in numerical_cols:
         if feature.startswith("vol_regime"):
             continue
+        series = df[feature]
         for lag in [1, 2, 3, 6, 12]:
-            df[f"{feature}_lag{lag}"] = df[feature].shift(lag)
+            lag_cols[f"{feature}_lag{lag}"] = series.shift(lag)
+
+    df = pd.concat([df, pd.DataFrame(lag_cols, index=df.index)], axis=1)
 
     # ======================
     # Rolling-Window Summaries
     # ======================
     for window in [6, 12, 24]:
+        roll_cols = {}
         for col in ["rsi_14", "macd_12_26", "volume"]:
-            df[f"{col}_ma_{window}"] = df[col].rolling(window).mean()
-            df[f"{col}_std_{window}"] = df[col].rolling(window).std()
+            roll_cols[f"{col}_ma_{window}"] = df[col].rolling(window).mean()
+            roll_cols[f"{col}_std_{window}"] = df[col].rolling(window).std()
+        df = df.assign(**roll_cols)
 
     # ======================
     # Market Regime Detection via Bayesian GMM
@@ -533,10 +640,13 @@ def generate_dataset(
     task: str = "classification",
     horizon: int = 3,
     clean: bool = True,
-    use_gpu: bool = False
+    use_gpu: bool = False,
+    extra_data: dict[str, pd.DataFrame] | None = None,
 ):
-    """Complete dataset generation pipeline with feature engineering, feature
-    selection and optional PCA.
+    """Complete dataset generation pipeline.
+
+    Performs feature engineering, optional higher interval aggregation,
+    feature selection and optional PCA.
 
     Args:
         raw_path: CSV path with OHLCV data
@@ -546,13 +656,15 @@ def generate_dataset(
         horizon: label horizon
         clean: drop rows with NaN labels
         use_gpu: forward to feature_selection for GPU acceleration
+        extra_data: optional dictionary of additional price data passed through
+            to ``build_features`` for feature augmentation.
     """
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
     print(f"✅ Loaded {len(df)} rows from {raw_path}")
     
     # 2. Feature engineering
-    df = build_features(df)
+    df = build_features(df, extra_data=extra_data)
     
     # 3. Create labels based on task
     if task == "classification":
