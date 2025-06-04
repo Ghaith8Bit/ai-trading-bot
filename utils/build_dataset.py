@@ -488,7 +488,7 @@ def generate_dataset(
     # Save selected feature names
     os.makedirs(output_dir, exist_ok=True)
     feature_name_path = os.path.join(output_dir, f"selected_features_{version}.csv")
-    pd.Series(selected_features).to_csv(feature_name_path, index=False)
+    pd.Series(selected_features).to_csv(feature_name_path, index=False, header=False)
     print(f"💾 Saved selected feature names to {feature_name_path}")
     
     # 8. PCA Transformation (with preservation)
