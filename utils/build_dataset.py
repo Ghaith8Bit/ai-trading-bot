@@ -68,6 +68,28 @@ def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
     df["ohlc4"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
 
     # ======================
+    # Candlestick Patterns
+    # ======================
+    price_range = (df["high"] - df["low"]).replace(0, np.nan)
+    df["body_pct"] = (df["close"] - df["open"]).abs() / price_range
+    df["upper_wick_pct"] = (df["high"] - df[["open", "close"]].max(axis=1)) / price_range
+    df["lower_wick_pct"] = (df[["open", "close"]].min(axis=1) - df["low"]) / price_range
+
+    df["doji"] = (df["body_pct"] < 0.1).astype(int)
+    df["bull_engulf"] = (
+        (df["close"] > df["open"]) &
+        (df["close"].shift(1) < df["open"].shift(1)) &
+        (df["open"] <= df["close"].shift(1)) &
+        (df["close"] >= df["open"].shift(1))
+    ).astype(int)
+    df["bear_engulf"] = (
+        (df["close"] < df["open"]) &
+        (df["close"].shift(1) > df["open"].shift(1)) &
+        (df["open"] >= df["close"].shift(1)) &
+        (df["close"] <= df["open"].shift(1))
+    ).astype(int)
+
+    # ======================
     # Returns & Volatility
     # ======================
     df["return_1h"] = df["close"].pct_change(1)

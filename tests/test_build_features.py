@@ -22,5 +22,7 @@ def test_build_features_basic():
 
     assert "return_1h" in features.columns
     assert "rsi_14" in features.columns
+    assert "body_pct" in features.columns
+    assert "upper_wick_pct" in features.columns
     assert pd.api.types.is_numeric_dtype(features["return_1h"])
     assert pd.api.types.is_numeric_dtype(features["rsi_14"])
