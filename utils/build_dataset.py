@@ -40,11 +40,18 @@ from sklearn.preprocessing import StandardScaler
 warnings.filterwarnings("ignore")
 
 
-def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
-    """
-    Enhanced feature engineering (long-only)—constructs a wide range of technical indicators,
-    rolling stats, regime labels, and cyclical features. Returns a DataFrame indexed by timestamp
-    with all numeric columns (no raw OHLCV except volume is used to compute indicators).
+def build_features(
+    df_raw: pd.DataFrame,
+    min_periods: int = 24,
+    higher_intervals: list[str] | None = None,
+) -> pd.DataFrame:
+    """Enhanced feature engineering.
+
+    Builds a large set of technical indicators, rolling statistics and
+    cyclical features. Optionally includes aggregated features from higher time
+    frame intervals via ``higher_intervals``.
+
+    Returns a DataFrame indexed by timestamp containing only numeric columns.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
@@ -59,6 +66,40 @@ def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
     # Ensure volume column exists
     if "volume" not in df.columns:
         df["volume"] = 1.0  # default to 1 if volume is missing
+
+    # ======================
+    # Higher Interval Features
+    # ======================
+    if higher_intervals:
+        for interval in higher_intervals:
+            agg = {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+            resampled = df_raw.resample(interval).agg(agg)
+
+            suffix = f"_{interval}"
+
+            resampled[f"close_ma_3{suffix}"] = (
+                resampled["close"].rolling(3, min_periods=1).mean()
+            )
+            resampled[f"close_ma_6{suffix}"] = (
+                resampled["close"].rolling(6, min_periods=1).mean()
+            )
+            resampled[f"rsi_14{suffix}"] = RSIIndicator(
+                resampled["close"], window=14
+            ).rsi()
+
+            features_to_add = resampled[[
+                f"close_ma_3{suffix}",
+                f"close_ma_6{suffix}",
+                f"rsi_14{suffix}",
+            ]]
+            features_to_add = features_to_add.reindex(df.index, method="ffill")
+            df = df.join(features_to_add)
 
     # ======================
     # Core Price Transformations
@@ -484,10 +525,13 @@ def generate_dataset(
     task: str = "classification",
     horizon: int = 3,
     clean: bool = True,
-    use_gpu: bool = False
+    use_gpu: bool = False,
+    higher_intervals: list[str] | None = None,
 ):
-    """Complete dataset generation pipeline with feature engineering, feature
-    selection and optional PCA.
+    """Complete dataset generation pipeline.
+
+    Performs feature engineering, optional higher interval aggregation,
+    feature selection and optional PCA.
 
     Args:
         raw_path: CSV path with OHLCV data
@@ -497,13 +541,14 @@ def generate_dataset(
         horizon: label horizon
         clean: drop rows with NaN labels
         use_gpu: forward to feature_selection for GPU acceleration
+        higher_intervals: optional list of resample intervals (e.g. ["4H", "1D"])
     """
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
     print(f"✅ Loaded {len(df)} rows from {raw_path}")
     
     # 2. Feature engineering
-    df = build_features(df)
+    df = build_features(df, higher_intervals=higher_intervals)
     
     # 3. Create labels based on task
     if task == "classification":
