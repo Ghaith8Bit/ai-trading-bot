@@ -407,35 +407,46 @@ def build_features(
             print("⚠️ Skipping wavelet transform: insufficient data")
 
         ae_window = 10
-        if len(df) >= max(ae_window + 1, 32):
+        min_samples = 32
+        if len(df) >= max(ae_window + min_samples, 32):
             try:
                 close_series = df["close"]
                 window_matrix = np.column_stack([
                     close_series.shift(i) for i in range(ae_window)
                 ])
-                mask = ~np.isnan(window_matrix).any(axis=1)
-                scaler_ae = StandardScaler()
-                X_train = scaler_ae.fit_transform(window_matrix[mask])
 
-                ae = MLPRegressor(
-                    hidden_layer_sizes=(3,),
-                    max_iter=200,
-                    random_state=42,
-                    solver="lbfgs",
-                )
-                ae.fit(X_train, X_train)
+                hidden_size = 3
+                features = np.full((len(df), hidden_size), np.nan, dtype=np.float32)
 
-                window_all = np.column_stack([
-                    close_series.shift(i).bfill().ffill().values
-                    for i in range(ae_window)
-                ])
-                X_all_scaled = scaler_ae.transform(window_all)
-                hidden = np.maximum(
-                    0, np.dot(X_all_scaled, ae.coefs_[0]) + ae.intercepts_[0]
-                )
+                for i in range(ae_window + min_samples, len(df) + 1):
+                    X_hist = window_matrix[: i - 1]
+                    mask = ~np.isnan(X_hist).any(axis=1)
+                    X_train = X_hist[mask]
+                    if len(X_train) < min_samples:
+                        continue
 
-                for j in range(hidden.shape[1]):
-                    unsup_df[f"ae_feat{j+1}"] = hidden[:, j]
+                    scaler_ae = StandardScaler()
+                    X_scaled = scaler_ae.fit_transform(X_train)
+
+                    ae = MLPRegressor(
+                        hidden_layer_sizes=(hidden_size,),
+                        max_iter=200,
+                        random_state=42,
+                        solver="lbfgs",
+                    )
+                    ae.fit(X_scaled, X_scaled)
+
+                    current = window_matrix[i - 1 : i]
+                    if np.isnan(current).any():
+                        continue
+                    current_scaled = scaler_ae.transform(current)
+                    hidden = np.maximum(
+                        0, np.dot(current_scaled, ae.coefs_[0]) + ae.intercepts_[0]
+                    )
+                    features[i - 1] = hidden[0]
+
+                for j in range(hidden_size):
+                    unsup_df[f"ae_feat{j+1}"] = features[:, j]
             except Exception as e:
                 print(f"⚠️ Autoencoder feature extraction failed: {e}")
         else:
