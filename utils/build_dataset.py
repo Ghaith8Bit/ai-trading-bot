@@ -50,6 +50,8 @@ def build_features(
     unsupervised: bool = False,
     higher_intervals: list[str] | None = None,
     extra_data: dict[str, pd.DataFrame] | None = None,
+    cyclical: str = "sin",
+    rbf_sigma: float = 1.0,
 ) -> pd.DataFrame:
     """
     Enhanced feature engineering (long-only) — constructs a wide range of technical
@@ -72,6 +74,11 @@ def build_features(
         resample the raw data and add coarse features.
     extra_data:
         Optional dictionary of additional market data dataframes keyed by name.
+    cyclical:
+        "sin" for sine/cosine encoding, "rbf" for radial basis functions or
+        "both" to include all cyclical features.
+    rbf_sigma:
+        Width parameter for radial basis function time features.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
@@ -367,9 +374,18 @@ def build_features(
         "month": df.index.month,
     }
 
+
     for col, period in [("hour", 24), ("dow", 7), ("month", 12)]:
-        time_cols[f"{col}_sin"] = np.sin(2 * np.pi * time_cols[col] / period)
-        time_cols[f"{col}_cos"] = np.cos(2 * np.pi * time_cols[col] / period)
+        if cyclical in ("sin", "both"):
+            time_cols[f"{col}_sin"] = np.sin(2 * np.pi * time_cols[col] / period)
+            time_cols[f"{col}_cos"] = np.cos(2 * np.pi * time_cols[col] / period)
+
+        if cyclical in ("rbf", "both"):
+            centers = [0, period / 2]
+            for i, c in enumerate(centers, start=1):
+                time_cols[f"{col}_rbf{i}"] = np.exp(
+                    -0.5 * ((time_cols[col] - c) / rbf_sigma) ** 2
+                )
 
     df = df.assign(**time_cols)
 
