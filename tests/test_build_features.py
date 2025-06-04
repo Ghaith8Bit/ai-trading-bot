@@ -8,7 +8,7 @@ from utils.build_dataset import build_features
 
 def test_build_features_basic():
     # Create deterministic sample data
-    rng = pd.date_range("2021-01-01", periods=60, freq="H")
+    rng = pd.date_range("2021-01-01", periods=60, freq="h")
     base = np.linspace(100, 160, num=60)
     df = pd.DataFrame({
         "open": base,
@@ -33,7 +33,7 @@ def test_build_features_basic():
 
 
 def test_build_features_unsupervised():
-    rng = pd.date_range("2021-01-01", periods=64, freq="H")
+    rng = pd.date_range("2021-01-01", periods=64, freq="h")
     base = np.linspace(100, 164, num=64)
     df = pd.DataFrame(
         {
@@ -53,7 +53,7 @@ def test_build_features_unsupervised():
 
 
 def test_build_features_higher_intervals():
-    rng = pd.date_range("2021-01-01", periods=60, freq="H")
+    rng = pd.date_range("2021-01-01", periods=60, freq="h")
     base = np.linspace(100, 160, num=60)
     df = pd.DataFrame(
         {

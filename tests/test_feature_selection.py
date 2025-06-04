@@ -6,7 +6,7 @@ from utils.build_dataset import feature_selection
 
 
 def _dummy_data(n_samples=30, n_features=8):
-    rng = pd.date_range("2021-01-01", periods=n_samples, freq="H")
+    rng = pd.date_range("2021-01-01", periods=n_samples, freq="h")
     X = pd.DataFrame(
         np.random.randn(n_samples, n_features),
         index=rng,
