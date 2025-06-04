@@ -45,14 +45,33 @@ warnings.filterwarnings("ignore")
 
 
 def build_features(
-    df_raw: pd.DataFrame, min_periods: int = 24, unsupervised: bool = False
+    df_raw: pd.DataFrame,
+    min_periods: int = 24,
+    unsupervised: bool = False,
+    higher_intervals: list[str] | None = None,
+    extra_data: dict[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """
-    Enhanced feature engineering (long-only)—constructs a wide range of technical indicators,
-    rolling stats, regime labels, and cyclical features. Returns a DataFrame indexed by timestamp
-    with all numeric columns (no raw OHLCV except volume is used to compute indicators).
-    If `unsupervised` is True, additional components from a wavelet transform and a tiny
-    autoencoder on the closing price are appended as features.
+    Enhanced feature engineering (long-only) — constructs a wide range of technical
+    indicators, rolling stats, regime labels and cyclical features. Returns a
+    DataFrame indexed by timestamp with all numeric columns (no raw OHLCV except
+    volume is used to compute indicators). If ``unsupervised`` is ``True``,
+    additional components from a wavelet transform and a tiny autoencoder on the
+    closing price are appended as features.
+
+    Parameters
+    ----------
+    df_raw:
+        Raw OHLCV dataframe indexed by timestamp.
+    min_periods:
+        Minimum periods for rolling calculations.
+    unsupervised:
+        Whether to add wavelet/autoencoder features.
+    higher_intervals:
+        Optional list of higher time-frame intervals (e.g. ``["4H", "1D"]``) to
+        resample the raw data and add coarse features.
+    extra_data:
+        Optional dictionary of additional market data dataframes keyed by name.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
