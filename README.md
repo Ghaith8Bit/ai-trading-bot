@@ -45,3 +45,14 @@ These produce the following columns:
 - **`y_ratio`** – ratio of `y_tp` to the absolute value of `y_sl`; used as the
   primary regression target.
 
+## Example Training
+
+After creating a processed dataset you can train a small model using
+`examples/train_example.py`:
+
+```bash
+python examples/train_example.py --task classification
+```
+
+The script saves the trained model under `models/` and prints simple metrics.
+
