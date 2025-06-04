@@ -35,8 +35,12 @@ generate_dataset(
     version="v1",
     task="classification",
     horizon=3,
+    regime_target_encoding=True,
 )
 ```
+
+When enabled, the market ``regime`` feature is encoded against the target
+variable using `category_encoders.TargetEncoder`.
 
 ### GPU Acceleration
 Set `use_gpu=True` when calling `generate_dataset` to enable faster feature
