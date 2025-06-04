@@ -91,6 +91,7 @@ def build_features(
     # Higher Interval Features
     # ======================
     if higher_intervals:
+        hi_frames = []
         for interval in higher_intervals:
             agg = {
                 "open": "first",
@@ -119,7 +120,10 @@ def build_features(
                 f"rsi_14{suffix}",
             ]]
             features_to_add = features_to_add.reindex(df.index, method="ffill")
-            df = df.join(features_to_add)
+            hi_frames.append(features_to_add)
+
+        if hi_frames:
+            df = df.join(pd.concat(hi_frames, axis=1))
 
     # ======================
     # Core Price Transformations
@@ -185,6 +189,7 @@ def build_features(
     # Additional Market Data
     # ======================
     if extra_data:
+        extra_frames = []
         for name, extra_df in extra_data.items():
             edf = extra_df.copy()
             edf = edf[~edf.index.duplicated(keep="first")]
@@ -200,7 +205,10 @@ def build_features(
             )
 
             feats = feats.reindex(df.index)
-            df = df.join(feats, how="left")
+            extra_frames.append(feats)
+
+        if extra_frames:
+            df = df.join(pd.concat(extra_frames, axis=1), how="left")
 
     # ======================
     # Momentum Indicators
@@ -307,12 +315,13 @@ def build_features(
     # Optional Unsupervised Features
     # ======================
     if unsupervised:
+        unsup_df = pd.DataFrame(index=df.index)
         try:
             import pywt
 
             coeffs = pywt.swt(df["close"], "db1", level=2)
             for idx, (_, cD) in enumerate(coeffs, start=1):
-                df[f"wavelet_c{idx}"] = cD
+                unsup_df[f"wavelet_c{idx}"] = cD
         except Exception as e:
             print(f"⚠️ Wavelet transform failed: {e}")
 
@@ -342,9 +351,12 @@ def build_features(
             hidden = np.maximum(0, np.dot(X_all_scaled, ae.coefs_[0]) + ae.intercepts_[0])
 
             for j in range(hidden.shape[1]):
-                df[f"ae_feat{j+1}"] = hidden[:, j]
+                unsup_df[f"ae_feat{j+1}"] = hidden[:, j]
         except Exception as e:
             print(f"⚠️ Autoencoder feature extraction failed: {e}")
+
+        if not unsup_df.empty:
+            df = pd.concat([df, unsup_df], axis=1)
 
     # ======================
     # Time & Cyclical Features
@@ -421,12 +433,12 @@ def build_features(
     # ======================
     # Rolling-Window Summaries
     # ======================
+    roll_cols = {}
     for window in [6, 12, 24]:
-        roll_cols = {}
         for col in ["rsi_14", "macd_12_26", "volume"]:
             roll_cols[f"{col}_ma_{window}"] = df[col].rolling(window).mean()
             roll_cols[f"{col}_std_{window}"] = df[col].rolling(window).std()
-        df = df.assign(**roll_cols)
+    df = df.assign(**roll_cols)
 
     # ======================
     # Market Regime Detection via Bayesian GMM
