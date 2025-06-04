@@ -78,11 +78,20 @@ During dataset generation, the functions `create_labels_classification` and
   primary regression target.
 
 ## Example Training
-After creating a processed dataset, train a simple model with
-`examples/train_example.py`:
+After creating a processed dataset, you can train a simple model using the
+provided script or the accompanying notebook.
+
+### Using the script
 
 ```bash
 python examples/train_classification.py
 ```
 
-The script saves the trained model under `models/` and prints basic metrics.
+### Using the notebook
+
+Open [`examples/train_classification.ipynb`](examples/train_classification.ipynb)
+for an interactive walkthrough that mirrors the script and includes plots of the
+training metrics.
+
+Both approaches save the trained model under `models/` and display basic
+metrics.
