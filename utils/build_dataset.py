@@ -13,12 +13,15 @@ from ta.volatility import (
 from ta.momentum import (
     RSIIndicator,
     StochasticOscillator,
-    ROCIndicator
+    ROCIndicator,
+    WilliamsRIndicator,
+    StochRSIIndicator,
 )
 from ta.trend import (
     MACD,
     ADXIndicator,
-    CCIIndicator
+    CCIIndicator,
+    AroonIndicator,
 )
 from ta.volume import (
     OnBalanceVolumeIndicator,
@@ -156,6 +159,14 @@ def build_features(
     for w in [10, 14, 20]:
         df[f"roc_{w}"] = ROCIndicator(df["close"], window=w).roc()
 
+    for w in [7, 14, 21]:
+        df[f"willr_{w}"] = WilliamsRIndicator(
+            df["high"], df["low"], df["close"], lbp=w
+        ).williams_r()
+        df[f"stochrsi_{w}"] = StochRSIIndicator(
+            df["close"], window=w
+        ).stochrsi()
+
     for fast, slow in [(12, 26), (10, 20), (8, 16)]:
         macd = MACD(
             df["close"], window_slow=slow, window_fast=fast
@@ -173,6 +184,11 @@ def build_features(
         df[f"di_plus_{w}"] = adx.adx_pos()
         df[f"di_minus_{w}"] = adx.adx_neg()
         df[f"cci_{w}"] = CCIIndicator(df["high"], df["low"], df["close"], window=w).cci()
+
+    for w in [14, 20, 28]:
+        aroon = AroonIndicator(df["high"], df["low"], window=w)
+        df[f"aroon_up_{w}"] = aroon.aroon_up()
+        df[f"aroon_down_{w}"] = aroon.aroon_down()
 
     # ======================
     # Volatility Indicators
