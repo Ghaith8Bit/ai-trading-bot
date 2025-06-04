@@ -39,6 +39,10 @@ generate_dataset(
 )
 ```
 
+### Reduced Memory Footprint
+All numeric columns are stored as `float32` when datasets are generated. This
+cuts the disk and memory usage roughly in half compared to `float64` storage.
+
 ### GPU Acceleration
 Set `use_gpu=True` when calling `generate_dataset` to enable faster feature
 selection. This requires a CUDA capable GPU, the NVIDIA toolkit, and optionally
