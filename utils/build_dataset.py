@@ -40,11 +40,23 @@ from sklearn.preprocessing import StandardScaler
 warnings.filterwarnings("ignore")
 
 
-def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
+def build_features(
+    df_raw: pd.DataFrame,
+    min_periods: int = 24,
+    extra_data: dict[str, pd.DataFrame] | None = None,
+) -> pd.DataFrame:
     """
     Enhanced feature engineering (long-only)—constructs a wide range of technical indicators,
     rolling stats, regime labels, and cyclical features. Returns a DataFrame indexed by timestamp
     with all numeric columns (no raw OHLCV except volume is used to compute indicators).
+
+    Args:
+        df_raw: OHLCV dataframe.
+        min_periods: minimum periods for rolling calculations.
+        extra_data: optional dictionary of additional price data keyed by name.
+            Each dataframe must be indexed by timestamp and contain at least a
+            ``close`` column. Basic indicators (returns and moving averages) are
+            computed and merged with suffixes derived from the key name.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
@@ -100,6 +112,27 @@ def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
     df["garch_vol"] = np.sqrt(
         (df["return_1h"] ** 2).ewm(alpha=0.1, min_periods=10).mean()
     )
+
+    # ======================
+    # Additional Market Data
+    # ======================
+    if extra_data:
+        for name, extra_df in extra_data.items():
+            edf = extra_df.copy()
+            edf = edf[~edf.index.duplicated(keep="first")]
+            edf.sort_index(inplace=True)
+            if "close" not in edf.columns:
+                raise ValueError(f"Extra dataframe '{name}' missing 'close' column")
+
+            feats = pd.DataFrame(index=edf.index)
+            feats[f"return_1h_{name}"] = edf["close"].pct_change(1)
+            feats[f"return_24h_{name}"] = edf["close"].pct_change(24)
+            feats[f"close_ma_24_{name}"] = (
+                edf["close"].rolling(24, min_periods=min_periods).mean()
+            )
+
+            feats = feats.reindex(df.index)
+            df = df.join(feats, how="left")
 
     # ======================
     # Momentum Indicators
@@ -484,7 +517,8 @@ def generate_dataset(
     task: str = "classification",
     horizon: int = 3,
     clean: bool = True,
-    use_gpu: bool = False
+    use_gpu: bool = False,
+    extra_data: dict[str, pd.DataFrame] | None = None,
 ):
     """Complete dataset generation pipeline with feature engineering, feature
     selection and optional PCA.
@@ -497,13 +531,15 @@ def generate_dataset(
         horizon: label horizon
         clean: drop rows with NaN labels
         use_gpu: forward to feature_selection for GPU acceleration
+        extra_data: optional dictionary of additional price data passed through
+            to ``build_features`` for feature augmentation.
     """
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
     print(f"✅ Loaded {len(df)} rows from {raw_path}")
     
     # 2. Feature engineering
-    df = build_features(df)
+    df = build_features(df, extra_data=extra_data)
     
     # 3. Create labels based on task
     if task == "classification":
