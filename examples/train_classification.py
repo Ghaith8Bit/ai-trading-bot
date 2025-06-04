@@ -2,6 +2,7 @@ from pathlib import Path
 import pandas as pd
 from joblib import dump
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -29,6 +30,18 @@ def main():
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
     lr = LogisticRegression(max_iter=1000)
+    # Cross-validation on the training portion
+    cv_metrics = {}
+    for metric in ["accuracy", "precision", "recall", "f1", "roc_auc"]:
+        scores = cross_val_score(
+            lr,
+            X_train,
+            y_train,
+            cv=5,
+            scoring=metric,
+        )
+        cv_metrics[metric] = scores.mean()
+
     lr.fit(X_train, y_train)
     lr_train_preds = lr.predict(X_train)
     lr_train_proba = lr.predict_proba(X_train)[:, 1]
@@ -50,6 +63,9 @@ def main():
     }
     print("LogisticRegression Train Metrics:")
     for k, v in train_metrics.items():
+        print(f"  {k.capitalize()}: {v:.4f}")
+    print("LogisticRegression 5-Fold CV Metrics:")
+    for k, v in cv_metrics.items():
         print(f"  {k.capitalize()}: {v:.4f}")
     print("LogisticRegression Test Metrics:")
     for k, v in test_metrics.items():
