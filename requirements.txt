@@ -1,7 +1,9 @@
 pandas
 numpy
 scikit-learn
-xgboost
+xgboost  # GPU-accelerated when CUDA is available
+cupy  # optional for GPU mutual information
+cuml  # optional for GPU mutual information
 lightgbm
 ta
 matplotlib
