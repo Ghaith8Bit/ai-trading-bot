@@ -1,8 +1,10 @@
 import os
-import pandas as pd
-import numpy as np
 import warnings
 import time
+from typing import Callable
+
+import pandas as pd
+import numpy as np
 from joblib import dump, load
 
 from ta.volatility import (
@@ -89,6 +91,10 @@ def _generate_windows(base_windows, df=None, scheme=None):
     else:
         windows = list(base_windows)
 
+    if df is not None:
+        max_len = len(df)
+        windows = [w for w in windows if w <= max_len]
+
     return sorted(set(int(w) for w in windows if w > 0))
 
 
@@ -100,6 +106,7 @@ def build_features(
     extra_data: dict[str, pd.DataFrame] | None = None,
     cyclical: str = "sin",
     rbf_sigma: float = 1.0,
+    window_scheme: str | Callable | None = None,
 ) -> pd.DataFrame:
     """
     Enhanced feature engineering (long-only) — constructs a wide range of technical
@@ -127,6 +134,9 @@ def build_features(
         "both" to include all cyclical features.
     rbf_sigma:
         Width parameter for radial basis function time features.
+    window_scheme:
+        Optional scheme for generating window sizes. Can be ``"fibonacci"``,
+        ``"volatility"`` or a custom callable.
     """
     df = df_raw.copy()
     df = df[~df.index.duplicated(keep="first")]
@@ -580,6 +590,10 @@ def build_features(
 
     # Replace infinities with NaN, then forward-fill up to 2 bars, then drop remaining NaNs
 
+    all_nan_cols = [c for c in df.columns if df[c].isna().all()]
+    for col in all_nan_cols:
+        df[col] = 0.0
+
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df = df.ffill(limit=2).dropna()
 
@@ -631,6 +645,8 @@ def feature_selection(
     use_gpu: bool = False,
     importance_method: str | None = None,
     importance_threshold: float = 0.0,
+    log_path: str | None = None,
+    group_by_time: bool = False,
 ) -> pd.Index:
     """
     Robust feature selection pipeline that works for both classification and regression.
@@ -653,9 +669,10 @@ def feature_selection(
       - importance_method: optional "shap" or "permutation" to compute
         post-selection feature importances
       - importance_threshold: prune features with importance below this value
+      - log_path: optional path to save RFE ranking CSV
+      - group_by_time: use time-series aware cross-validation
     """
-    if time_cv is not None:
-        group_by_time = time_cv
+    cv_obj = TimeSeriesSplit(n_splits=3) if group_by_time else None
 
     start_time = time.time()
     print(f"🔍 Starting feature selection on {X.shape[1]} features for {task}...")
@@ -723,10 +740,6 @@ def feature_selection(
     print(f"📊 MI selected {len(top_mi_features)} candidate features")
 
     # 4) Recursive Feature Elimination (RFE) to exactly n_features
-    if group_by_time:
-        cv_obj = TimeSeriesSplit(n_splits=3)
-    else:
-        cv_obj = None
     if task == "classification":
         if use_gpu:
             from xgboost import XGBClassifier
@@ -1040,8 +1053,11 @@ def generate_dataset(
         feature_reference["scaler"] = f"scaler_{version}.joblib"
         feature_reference["pca_model"] = f"pca_{version}.joblib"
     
-    dump(feature_reference, os.path.join(output_dir, f"feature_reference_{version}.joblib"))
-    print(f"📝 Saved comprehensive feature reference for deployment")
+    dump(
+        feature_reference,
+        os.path.join(output_dir, f"feature_reference_{version}.joblib"),
+    )
+    print("📝 Saved comprehensive feature reference for deployment")
 
 # For deployment
 def load_feature_mapper(output_dir: str, version: str):
