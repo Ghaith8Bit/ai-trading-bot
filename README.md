@@ -30,3 +30,14 @@ generate_dataset(
 
 If `use_gpu` is disabled (default), CPU implementations are used.
 
+## Example Training
+
+After creating a processed dataset you can train a small model using
+`examples/train_example.py`:
+
+```bash
+python examples/train_example.py --task classification
+```
+
+The script saves the trained model under `models/` and prints simple metrics.
+
