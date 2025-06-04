@@ -10,7 +10,11 @@ from sklearn.metrics import (
     roc_auc_score,
     confusion_matrix,
     classification_report,
+    roc_curve,
+    precision_recall_curve,
 )
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 def main():
@@ -54,6 +58,38 @@ def main():
     print(confusion_matrix(y_test, lr_test_preds))
     print("LogisticRegression Test Classification Report:")
     print(classification_report(y_test, lr_test_preds))
+
+    plots_dir = Path("plots")
+    plots_dir.mkdir(exist_ok=True)
+
+    fpr, tpr, _ = roc_curve(y_test, lr_test_proba)
+    plt.figure()
+    plt.plot(fpr, tpr, label="LogisticRegression")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.legend()
+    plt.savefig(plots_dir / "roc_curve.png")
+    plt.close()
+
+    precision, recall, _ = precision_recall_curve(y_test, lr_test_proba)
+    plt.figure()
+    plt.plot(recall, precision, label="LogisticRegression")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("Precision-Recall Curve")
+    plt.legend()
+    plt.savefig(plots_dir / "precision_recall_curve.png")
+    plt.close()
+
+    cm = confusion_matrix(y_test, lr_test_preds)
+    plt.figure()
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title("Confusion Matrix")
+    plt.savefig(plots_dir / "confusion_matrix.png")
+    plt.close()
 
     try:
         from xgboost import XGBClassifier
