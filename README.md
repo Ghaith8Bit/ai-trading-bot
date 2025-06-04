@@ -11,6 +11,7 @@ regression targets.
   - [GPU Acceleration](#gpu-acceleration)
   - [Additional Market Data](#additional-market-data)
   - [Unsupervised Features](#unsupervised-features)
+  - [Time Series CV](#time-series-cv)
 - [Labels](#labels)
 - [Example Training](#example-training)
 
@@ -63,6 +64,11 @@ components derived from the closing price:
 ```python
 features = build_features(df, unsupervised=True)
 ```
+
+### Time Series CV
+Use `group_by_time=True` (alias `time_cv`) with `feature_selection` to apply
+`TimeSeriesSplit` during recursive elimination and the sequential selector. This
+makes feature ranking respect chronological order.
 
 ## Labels
 During dataset generation, the functions `create_labels_classification` and

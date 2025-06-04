@@ -36,6 +36,7 @@ from sklearn.feature_selection import (
     SequentialFeatureSelector,
     mutual_info_regression
 )
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, GradientBoostingRegressor, RandomForestRegressor
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -521,6 +522,8 @@ def feature_selection(
     n_features: int = 40,
     task: str = "classification",  # "classification" or "regression"
     use_gpu: bool = False,
+    group_by_time: bool = False,
+    time_cv: bool | None = None,
 ) -> pd.Index:
     """
     Robust feature selection pipeline that works for both classification and regression.
@@ -540,7 +543,11 @@ def feature_selection(
       - n_features: number of features to select via RFE/SFS
       - task: "classification" or "regression"
       - use_gpu: enable GPU accelerated estimators
+      - group_by_time/time_cv: use TimeSeriesSplit instead of KFold
     """
+    if time_cv is not None:
+        group_by_time = time_cv
+
     start_time = time.time()
     print(f"🔍 Starting feature selection on {X.shape[1]} features for {task}...")
 
@@ -607,6 +614,10 @@ def feature_selection(
     print(f"📊 MI selected {len(top_mi_features)} candidate features")
 
     # 4) Recursive Feature Elimination (RFE) to exactly n_features
+    if group_by_time:
+        cv_obj = TimeSeriesSplit(n_splits=3)
+    else:
+        cv_obj = None
     if task == "classification":
         if use_gpu:
             from xgboost import XGBClassifier
@@ -650,7 +661,7 @@ def feature_selection(
             sfs_estimator,
             n_features_to_select=n_features,
             direction="forward",
-            cv=3,
+            cv=cv_obj if cv_obj is not None else 3,
             n_jobs=-1
         )
         sfs.fit(X_filtered[rfe_features], y)

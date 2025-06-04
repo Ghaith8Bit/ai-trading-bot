@@ -48,3 +48,10 @@ def test_feature_selection_gpu_tree_method():
 
     assert calls["kwargs"]["tree_method"] == "gpu_hist"
     assert len(selected) == 4
+
+
+def test_feature_selection_time_cv_invoked():
+    X, y = _dummy_data()
+    with patch("utils.build_dataset.TimeSeriesSplit") as mock_split:
+        feature_selection(X, y, n_features=5, task="classification", group_by_time=True)
+        assert mock_split.called
