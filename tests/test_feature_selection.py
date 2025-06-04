@@ -6,6 +6,7 @@ from utils.build_dataset import feature_selection
 
 
 def _dummy_data(n_samples=30, n_features=8):
+    np.random.seed(0)
     rng = pd.date_range("2021-01-01", periods=n_samples, freq="h")
     X = pd.DataFrame(
         np.random.randn(n_samples, n_features),
@@ -18,7 +19,13 @@ def _dummy_data(n_samples=30, n_features=8):
 
 def test_feature_selection_cpu():
     X, y = _dummy_data()
-    selected = feature_selection(X, y, n_features=5, task="classification", use_gpu=False)
+    selected = feature_selection(
+        X,
+        y,
+        n_features=5,
+        task="classification",
+        use_gpu=False,
+    )
     assert len(selected) == 5
 
 
@@ -44,7 +51,13 @@ def test_feature_selection_gpu_tree_method():
             return self
 
     with patch("xgboost.XGBClassifier", DummyXGB):
-        selected = feature_selection(X, y, n_features=4, task="classification", use_gpu=True)
+        selected = feature_selection(
+            X,
+            y,
+            n_features=4,
+            task="classification",
+            use_gpu=True,
+        )
 
     assert calls["kwargs"]["tree_method"] == "gpu_hist"
     assert len(selected) == 4
@@ -58,10 +71,25 @@ def test_feature_selection_permutation_pruning():
             pass
 
     class DummyResult:
-        importances_mean = np.array([0.1, 0.05, 0.001, 0.2, 0.3, 0.0, 0.04, 0.02])
+        importances_mean = np.array([
+            0.1,
+            0.05,
+            0.001,
+            0.2,
+            0.3,
+            0.0,
+            0.04,
+            0.02,
+        ])
 
-    with patch("utils.build_dataset.RandomForestClassifier", return_value=DummyRF()):
-        with patch("utils.build_dataset.permutation_importance", return_value=DummyResult()):
+    with patch(
+        "utils.build_dataset.RandomForestClassifier",
+        return_value=DummyRF(),
+    ):
+        with patch(
+            "utils.build_dataset.permutation_importance",
+            return_value=DummyResult(),
+        ):
             with patch("utils.build_dataset.RFE") as DummyRFE:
                 DummyRFE.return_value.fit.return_value = None
                 DummyRFE.return_value.support_ = np.array([True] * X.shape[1])
@@ -76,11 +104,19 @@ def test_feature_selection_permutation_pruning():
 
     assert len(selected) == 4
 
+
 def test_feature_selection_time_cv_invoked():
     X, y = _dummy_data()
     with patch("utils.build_dataset.TimeSeriesSplit") as mock_split:
-        feature_selection(X, y, n_features=5, task="classification", group_by_time=True)
+        feature_selection(
+            X,
+            y,
+            n_features=5,
+            task="classification",
+            group_by_time=True,
+        )
         assert mock_split.called
+
 
 def test_feature_selection_logs(tmp_path):
     X, y = _dummy_data()
