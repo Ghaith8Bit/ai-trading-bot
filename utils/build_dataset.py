@@ -377,44 +377,53 @@ def build_features(
     # ======================
     if unsupervised:
         unsup_df = pd.DataFrame(index=df.index)
-        try:
-            import pywt
 
-            coeffs = pywt.swt(df["close"], "db1", level=2)
-            for idx, (_, cD) in enumerate(coeffs, start=1):
-                unsup_df[f"wavelet_c{idx}"] = cD
-        except Exception as e:
-            print(f"⚠️ Wavelet transform failed: {e}")
+        if len(df) >= 32:
+            try:
+                import pywt
 
-        try:
-            ae_window = 10
-            close_series = df["close"]
-            window_matrix = np.column_stack([
-                close_series.shift(i) for i in range(ae_window)
-            ])
-            mask = ~np.isnan(window_matrix).any(axis=1)
-            scaler_ae = StandardScaler()
-            X_train = scaler_ae.fit_transform(window_matrix[mask])
+                coeffs = pywt.swt(df["close"], "db1", level=2)
+                for idx, (_, cD) in enumerate(coeffs, start=1):
+                    unsup_df[f"wavelet_c{idx}"] = cD
+            except Exception as e:
+                print(f"⚠️ Wavelet transform failed: {e}")
+        else:
+            print("⚠️ Skipping wavelet transform: insufficient data")
 
-            ae = MLPRegressor(
-                hidden_layer_sizes=(3,),
-                max_iter=200,
-                random_state=42,
-                solver="lbfgs",
-            )
-            ae.fit(X_train, X_train)
+        ae_window = 10
+        if len(df) >= max(ae_window + 1, 32):
+            try:
+                close_series = df["close"]
+                window_matrix = np.column_stack([
+                    close_series.shift(i) for i in range(ae_window)
+                ])
+                mask = ~np.isnan(window_matrix).any(axis=1)
+                scaler_ae = StandardScaler()
+                X_train = scaler_ae.fit_transform(window_matrix[mask])
 
-            window_all = np.column_stack([
-                close_series.shift(i).fillna(method="bfill").fillna(method="ffill").values
-                for i in range(ae_window)
-            ])
-            X_all_scaled = scaler_ae.transform(window_all)
-            hidden = np.maximum(0, np.dot(X_all_scaled, ae.coefs_[0]) + ae.intercepts_[0])
+                ae = MLPRegressor(
+                    hidden_layer_sizes=(3,),
+                    max_iter=200,
+                    random_state=42,
+                    solver="lbfgs",
+                )
+                ae.fit(X_train, X_train)
 
-            for j in range(hidden.shape[1]):
-                unsup_df[f"ae_feat{j+1}"] = hidden[:, j]
-        except Exception as e:
-            print(f"⚠️ Autoencoder feature extraction failed: {e}")
+                window_all = np.column_stack([
+                    close_series.shift(i).bfill().ffill().values
+                    for i in range(ae_window)
+                ])
+                X_all_scaled = scaler_ae.transform(window_all)
+                hidden = np.maximum(
+                    0, np.dot(X_all_scaled, ae.coefs_[0]) + ae.intercepts_[0]
+                )
+
+                for j in range(hidden.shape[1]):
+                    unsup_df[f"ae_feat{j+1}"] = hidden[:, j]
+            except Exception as e:
+                print(f"⚠️ Autoencoder feature extraction failed: {e}")
+        else:
+            print("⚠️ Skipping autoencoder features: insufficient data")
 
         if not unsup_df.empty:
             df = pd.concat([df, unsup_df], axis=1)
