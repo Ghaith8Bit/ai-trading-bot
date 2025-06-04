@@ -1,6 +1,7 @@
 from pathlib import Path
 import pandas as pd
 from joblib import dump
+from utils import feature_selection
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score
 from sklearn.metrics import (
@@ -29,6 +30,18 @@ def main():
     split_idx = int(len(X) * 0.8)
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+    # Optional permutation importance pruning after feature selection
+    selected = feature_selection(
+        X_train,
+        y_train,
+        n_features=40,
+        task="classification",
+        importance_method="permutation",
+        importance_threshold=0.01,
+    )
+    X_train = X_train[selected]
+    X_test = X_test[selected]
 
     lr = LogisticRegression(max_iter=1000)
     # Cross-validation on the training portion

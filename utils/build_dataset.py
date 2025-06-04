@@ -34,10 +34,16 @@ from sklearn.feature_selection import (
     RFE,
     VarianceThreshold,
     SequentialFeatureSelector,
-    mutual_info_regression
+    mutual_info_regression,
 )
+from sklearn.ensemble import (
+    RandomForestClassifier,
+    GradientBoostingClassifier,
+    GradientBoostingRegressor,
+    RandomForestRegressor,
+)
+from sklearn.inspection import permutation_importance
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, GradientBoostingRegressor, RandomForestRegressor
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPRegressor
@@ -623,8 +629,8 @@ def feature_selection(
     n_features: int = 40,
     task: str = "classification",  # "classification" or "regression"
     use_gpu: bool = False,
-    group_by_time: bool = False,
-    time_cv: bool | None = None,
+    importance_method: str | None = None,
+    importance_threshold: float = 0.0,
 ) -> pd.Index:
     """
     Robust feature selection pipeline that works for both classification and regression.
@@ -637,14 +643,16 @@ def feature_selection(
       5) Optional forward SFS if RFE still > n_features*1.5
     
     Returns the Index of selected feature names.
-    
+
     Args:
       - X: DataFrame of shape (n_samples, n_candidate_features)
       - y: Series of labels (binary/discrete for classification; continuous for regression)
       - n_features: number of features to select via RFE/SFS
       - task: "classification" or "regression"
       - use_gpu: enable GPU accelerated estimators
-      - group_by_time/time_cv: use TimeSeriesSplit instead of KFold
+      - importance_method: optional "shap" or "permutation" to compute
+        post-selection feature importances
+      - importance_threshold: prune features with importance below this value
     """
     if time_cv is not None:
         group_by_time = time_cv
@@ -777,6 +785,62 @@ def feature_selection(
         final_features = rfe_features[sfs.get_support()]
     else:
         final_features = rfe_features
+
+    # Optional post-selection importance pruning
+    if importance_method:
+        if task == "classification":
+            imp_model = RandomForestClassifier(n_estimators=50, random_state=42)
+        else:
+            imp_model = RandomForestRegressor(n_estimators=50, random_state=42)
+
+        imp_model.fit(X_filtered[final_features], y)
+
+        if importance_method == "permutation":
+            result = permutation_importance(
+                imp_model,
+                X_filtered[final_features],
+                y,
+                n_repeats=5,
+                random_state=42,
+                n_jobs=-1,
+            )
+            importances = pd.Series(result.importances_mean, index=final_features)
+        elif importance_method == "shap":
+            try:
+                import shap
+
+                explainer = shap.TreeExplainer(imp_model)
+                shap_values = explainer.shap_values(X_filtered[final_features])
+                importances = pd.Series(
+                    np.abs(shap_values).mean(axis=0), index=final_features
+                )
+            except Exception as e:
+                print(f"SHAP importance failed: {e}; falling back to permutation")
+                result = permutation_importance(
+                    imp_model,
+                    X_filtered[final_features],
+                    y,
+                    n_repeats=5,
+                    random_state=42,
+                    n_jobs=-1,
+                )
+                importances = pd.Series(result.importances_mean, index=final_features)
+        else:
+            raise ValueError("importance_method must be 'shap' or 'permutation'")
+
+        importances.sort_values(ascending=False, inplace=True)
+        print("⭐ Feature importances:")
+        for feat, score in importances.items():
+            print(f"  {feat}: {score:.4f}")
+
+        if importance_threshold > 0:
+            keep = importances[importances >= importance_threshold].index
+            pruned = len(final_features) - len(keep)
+            if pruned > 0:
+                print(
+                    f"🗑️ Pruned {pruned} features below {importance_threshold}"
+                )
+            final_features = pd.Index(keep)
 
     print(f"⏱️ Feature selection completed in {time.time() - start_time:.2f}s")
     print(f"🎯 Final feature count: {len(final_features)}")

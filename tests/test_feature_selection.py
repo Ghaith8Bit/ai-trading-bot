@@ -50,6 +50,31 @@ def test_feature_selection_gpu_tree_method():
     assert len(selected) == 4
 
 
+def test_feature_selection_permutation_pruning():
+    X, y = _dummy_data()
+
+    class DummyRF:
+        def fit(self, X, y):
+            pass
+
+    class DummyResult:
+        importances_mean = np.array([0.1, 0.05, 0.001, 0.2, 0.3, 0.0, 0.04, 0.02])
+
+    with patch("utils.build_dataset.RandomForestClassifier", return_value=DummyRF()):
+        with patch("utils.build_dataset.permutation_importance", return_value=DummyResult()):
+            with patch("utils.build_dataset.RFE") as DummyRFE:
+                DummyRFE.return_value.fit.return_value = None
+                DummyRFE.return_value.support_ = np.array([True] * X.shape[1])
+                selected = feature_selection(
+                    X,
+                    y,
+                    n_features=8,
+                    task="classification",
+                    importance_method="permutation",
+                    importance_threshold=0.05,
+                )
+
+    assert len(selected) == 4
 
 def test_feature_selection_time_cv_invoked():
     X, y = _dummy_data()
