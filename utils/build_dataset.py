@@ -333,6 +333,7 @@ def feature_selection(
     y: pd.Series,
     n_features: int = 40,
     task: str = "classification",  # "classification" or "regression"
+    use_gpu: bool = False,
 ) -> pd.Index:
     """
     Robust feature selection pipeline that works for both classification and regression.
@@ -351,6 +352,7 @@ def feature_selection(
       - y: Series of labels (binary/discrete for classification; continuous for regression)
       - n_features: number of features to select via RFE/SFS
       - task: "classification" or "regression"
+      - use_gpu: enable GPU accelerated estimators
     """
     start_time = time.time()
     print(f"🔍 Starting feature selection on {X.shape[1]} features for {task}...")
@@ -381,9 +383,37 @@ def feature_selection(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if task == "classification":
-            mi_scores = mutual_info_classif(X_sample, y_sample, random_state=42, n_neighbors=5)
+            if use_gpu:
+                try:
+                    from cuml.feature_selection import mutual_info_classif as gpu_mic
+                    mi_scores = gpu_mic(
+                        X_sample.values.astype(np.float32),
+                        y_sample.values.astype(np.int32),
+                    ).to_array()
+                except Exception:
+                    mi_scores = mutual_info_classif(
+                        X_sample, y_sample, random_state=42, n_neighbors=5
+                    )
+            else:
+                mi_scores = mutual_info_classif(
+                    X_sample, y_sample, random_state=42, n_neighbors=5
+                )
         else:  # regression
-            mi_scores = mutual_info_regression(X_sample, y_sample, random_state=42, n_neighbors=5)
+            if use_gpu:
+                try:
+                    from cuml.feature_selection import mutual_info_regression as gpu_mir
+                    mi_scores = gpu_mir(
+                        X_sample.values.astype(np.float32),
+                        y_sample.values.astype(np.float32),
+                    ).to_array()
+                except Exception:
+                    mi_scores = mutual_info_regression(
+                        X_sample, y_sample, random_state=42, n_neighbors=5
+                    )
+            else:
+                mi_scores = mutual_info_regression(
+                    X_sample, y_sample, random_state=42, n_neighbors=5
+                )
 
     mi_ranking = pd.Series(mi_scores, index=X_filtered.columns).sort_values(ascending=False)
     top_mi_features = mi_ranking.head(min(100, len(mi_ranking))).index
@@ -391,9 +421,27 @@ def feature_selection(
 
     # 4) Recursive Feature Elimination (RFE) to exactly n_features
     if task == "classification":
-        estimator = GradientBoostingClassifier(n_estimators=50, random_state=42)
+        if use_gpu:
+            from xgboost import XGBClassifier
+            estimator = XGBClassifier(
+                n_estimators=100,
+                tree_method="gpu_hist",
+                random_state=42,
+                verbosity=0,
+            )
+        else:
+            estimator = GradientBoostingClassifier(n_estimators=50, random_state=42)
     else:
-        estimator = GradientBoostingRegressor(n_estimators=50, random_state=42)
+        if use_gpu:
+            from xgboost import XGBRegressor
+            estimator = XGBRegressor(
+                n_estimators=100,
+                tree_method="gpu_hist",
+                random_state=42,
+                verbosity=0,
+            )
+        else:
+            estimator = GradientBoostingRegressor(n_estimators=50, random_state=42)
 
     selector = RFE(
         estimator,
@@ -435,9 +483,21 @@ def generate_dataset(
     version: str = "v1",
     task: str = "classification",
     horizon: int = 3,
-    clean: bool = True
+    clean: bool = True,
+    use_gpu: bool = False
 ):
-    """Complete dataset generation pipeline with feature engineering, feature selection and optional PCA."""
+    """Complete dataset generation pipeline with feature engineering, feature
+    selection and optional PCA.
+
+    Args:
+        raw_path: CSV path with OHLCV data
+        output_dir: directory to store artifacts
+        version: dataset version string
+        task: "classification" or "regression"
+        horizon: label horizon
+        clean: drop rows with NaN labels
+        use_gpu: forward to feature_selection for GPU acceleration
+    """
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
     print(f"✅ Loaded {len(df)} rows from {raw_path}")
@@ -478,10 +538,22 @@ def generate_dataset(
     # 7. Feature selection
     if task == "regression":
         y_selection = y["y_ratio"]
-        selected_features = feature_selection(X, y_selection, n_features=40, task="regression")
+        selected_features = feature_selection(
+            X,
+            y_selection,
+            n_features=40,
+            task="regression",
+            use_gpu=use_gpu,
+        )
     else:  # classification
         y_selection = y["y_class"]
-        selected_features = feature_selection(X, y_selection, n_features=40, task="classification")
+        selected_features = feature_selection(
+            X,
+            y_selection,
+            n_features=40,
+            task="classification",
+            use_gpu=use_gpu,
+        )
 
     X_sel = X[selected_features]
     
