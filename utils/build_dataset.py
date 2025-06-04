@@ -476,8 +476,13 @@ def build_features(
     df.drop(columns=intermediate_cols, inplace=True, errors="ignore")
 
     # Replace infinities with NaN, then forward-fill up to 2 bars, then drop remaining NaNs
+
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df = df.ffill(limit=2).dropna()
+
+    # Convert numeric columns to float32 for smaller memory footprint
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    df[num_cols] = df[num_cols].astype(np.float32)
 
     print(f"✅ Built {len(df.columns)} features | {len(df)} samples")
     return df
@@ -804,7 +809,13 @@ def generate_dataset(
     # 9. Save dataset
     X_path = os.path.join(output_dir, f"X_{version}.parquet")
     y_path = os.path.join(output_dir, f"y_{version}.parquet")
-    
+
+    # Convert numeric columns to float32 before saving
+    num_cols = X_final.select_dtypes(include=[np.number]).columns
+    X_final[num_cols] = X_final[num_cols].astype(np.float32)
+    y_num_cols = y.select_dtypes(include=[np.number]).columns
+    y[y_num_cols] = y[y_num_cols].astype(np.float32)
+
     X_final.to_parquet(X_path)
     y.to_parquet(y_path)
     
