@@ -36,8 +36,12 @@ generate_dataset(
     version="v1",
     task="classification",
     horizon=3,
+    regime_target_encoding=True,
 )
 ```
+
+When enabled, the market ``regime`` feature is encoded against the target
+variable using `category_encoders.TargetEncoder`.
 
 ### Reduced Memory Footprint
 All numeric columns are stored as `float32` when datasets are generated. This

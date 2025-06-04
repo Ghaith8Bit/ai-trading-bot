@@ -557,7 +557,9 @@ def build_features(
             df["regime_change"] = (
                 df["regime"].diff().abs().gt(0).astype(int)
             )
+            regime_numeric = df["regime"].copy()
             df = pd.get_dummies(df, columns=["regime"], prefix="regime")
+            df["regime"] = regime_numeric
         except Exception as e:
             print(f"⚠️ Market regime detection failed: {e}")
 
@@ -790,6 +792,7 @@ def generate_dataset(
     horizon: int = 3,
     clean: bool = True,
     use_gpu: bool = False,
+    regime_target_encoding: bool = False,
     extra_data: dict[str, pd.DataFrame] | None = None,
 ):
     """Complete dataset generation pipeline.
@@ -807,6 +810,8 @@ def generate_dataset(
         use_gpu: forward to feature_selection for GPU acceleration
         extra_data: optional dictionary of additional price data passed through
             to ``build_features`` for feature augmentation.
+        regime_target_encoding: apply target encoding to the ``regime`` column
+            after label creation if present.
     """
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
@@ -824,6 +829,18 @@ def generate_dataset(
         label_col = "y_ratio"
     else:
         raise ValueError("Task must be 'classification' or 'regression'")
+
+    # 3b. Optional target encoding of market regime
+    if regime_target_encoding and "regime" in df.columns:
+        try:
+            from category_encoders import TargetEncoder
+
+            target_col = "y_class" if task == "classification" else "y_ratio"
+            te = TargetEncoder(cols=["regime"])
+            encoded = te.fit_transform(df[["regime"]], df[target_col])
+            df["regime_te"] = encoded["regime"]
+        except Exception as e:
+            print(f"⚠️ Regime target encoding failed: {e}")
     
     # 4. Clean data
     if clean:
@@ -864,6 +881,10 @@ def generate_dataset(
             task="classification",
             use_gpu=use_gpu,
         )
+
+    if regime_target_encoding and "regime_te" in X.columns:
+        if "regime_te" not in selected_features:
+            selected_features = list(selected_features) + ["regime_te"]
 
     X_sel = X[selected_features]
     
