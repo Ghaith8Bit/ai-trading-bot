@@ -1,0 +1,634 @@
+import os
+import pandas as pd
+import numpy as np
+import warnings
+import time
+from joblib import dump, load
+
+from ta.volatility import (
+    BollingerBands,
+    AverageTrueRange,
+    KeltnerChannel
+)
+from ta.momentum import (
+    RSIIndicator,
+    StochasticOscillator,
+    ROCIndicator
+)
+from ta.trend import (
+    MACD,
+    ADXIndicator,
+    CCIIndicator
+)
+from ta.volume import (
+    OnBalanceVolumeIndicator,
+    AccDistIndexIndicator,
+    MFIIndicator
+)
+
+from sklearn.feature_selection import (
+    mutual_info_classif,
+    RFE,
+    VarianceThreshold,
+    SequentialFeatureSelector,
+    mutual_info_regression
+)
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, GradientBoostingRegressor, RandomForestRegressor
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+warnings.filterwarnings("ignore")
+
+
+def build_features(df_raw: pd.DataFrame, min_periods: int = 24) -> pd.DataFrame:
+    """
+    Enhanced feature engineering (long-only)—constructs a wide range of technical indicators,
+    rolling stats, regime labels, and cyclical features. Returns a DataFrame indexed by timestamp
+    with all numeric columns (no raw OHLCV except volume is used to compute indicators).
+    """
+    df = df_raw.copy()
+    df = df[~df.index.duplicated(keep="first")]
+    df.sort_index(inplace=True)
+
+    # Validate presence of required columns
+    required_cols = ["open", "high", "low", "close"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    # Ensure volume column exists
+    if "volume" not in df.columns:
+        df["volume"] = 1.0  # default to 1 if volume is missing
+
+    # ======================
+    # Core Price Transformations
+    # ======================
+    df["hl2"] = (df["high"] + df["low"]) / 2
+    df["hlc3"] = (df["high"] + df["low"] + df["close"]) / 3
+    df["ohlc4"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+
+    # ======================
+    # Returns & Volatility
+    # ======================
+    df["return_1h"] = df["close"].pct_change(1)
+
+    for window in [2, 4, 8, 12, 24, 48, 72]:
+        current_min_periods = min(min_periods, window)
+        df[f"return_{window}h"] = df["close"].pct_change(window)
+        df[f"volatility_{window}"] = (
+            df["return_1h"]
+            .rolling(window, min_periods=current_min_periods)
+            .std()
+        )
+        df[f"close_ma_{window}"] = (
+            df["close"]
+            .rolling(window, min_periods=current_min_periods)
+            .mean()
+        )
+        df[f"volume_ma_{window}"] = (
+            df["volume"]
+            .rolling(window, min_periods=current_min_periods)
+            .mean()
+        )
+
+    # Advanced volatility
+    df["volatility_ewm"] = (
+        df["return_1h"]
+        .ewm(span=24, adjust=False, min_periods=min_periods)
+        .std()
+    )
+    df["garch_vol"] = np.sqrt(
+        (df["return_1h"] ** 2).ewm(alpha=0.1, min_periods=10).mean()
+    )
+
+    # ======================
+    # Momentum Indicators
+    # ======================
+    for w in [7, 14, 21]:
+        df[f"rsi_{w}"] = RSIIndicator(df["close"], window=w).rsi()
+        stoch = StochasticOscillator(
+            df["high"], df["low"], df["close"], window=w
+        )
+        df[f"stoch_k_{w}"] = stoch.stoch()
+        df[f"stoch_d_{w}"] = stoch.stoch_signal()
+
+    for w in [10, 14, 20]:
+        df[f"roc_{w}"] = ROCIndicator(df["close"], window=w).roc()
+
+    for fast, slow in [(12, 26), (10, 20), (8, 16)]:
+        macd = MACD(
+            df["close"], window_slow=slow, window_fast=fast
+        )
+        df[f"macd_{fast}_{slow}"] = macd.macd()
+        df[f"macd_signal_{fast}_{slow}"] = macd.macd_signal()
+        df[f"macd_hist_{fast}_{slow}"] = macd.macd_diff()
+
+    # ======================
+    # Trend Indicators
+    # ======================
+    for w in [14, 20, 28]:
+        adx = ADXIndicator(df["high"], df["low"], df["close"], window=w)
+        df[f"adx_{w}"] = adx.adx()
+        df[f"di_plus_{w}"] = adx.adx_pos()
+        df[f"di_minus_{w}"] = adx.adx_neg()
+        df[f"cci_{w}"] = CCIIndicator(df["high"], df["low"], df["close"], window=w).cci()
+
+    # ======================
+    # Volatility Indicators
+    # ======================
+    for window in [10, 20, 50]:
+        bb = BollingerBands(df["close"], window=window, window_dev=2)
+        df[f"bb_upper_{window}"] = bb.bollinger_hband()
+        df[f"bb_lower_{window}"] = bb.bollinger_lband()
+        df[f"bb_width_{window}"] = (
+            (df[f"bb_upper_{window}"] - df[f"bb_lower_{window}"])
+            / df[f"bb_upper_{window}"].replace(0, np.nan)
+        )
+
+    for w in [7, 14, 21]:
+        df[f"atr_{w}"] = AverageTrueRange(
+            df["high"], df["low"], df["close"], window=w
+        ).average_true_range()
+
+        kc = KeltnerChannel(df["high"], df["low"], df["close"], window=w)
+        df[f"kc_upper_{w}"] = kc.keltner_channel_hband()
+        df[f"kc_lower_{w}"] = kc.keltner_channel_lband()
+        df[f"kc_width_{w}"] = (
+            (df[f"kc_upper_{w}"] - df[f"kc_lower_{w}"])
+            / df[f"kc_upper_{w}"].replace(0, np.nan)
+        )
+
+    # ======================
+    # Volume Indicators
+    # ======================
+    df["obv"] = OnBalanceVolumeIndicator(
+        df["close"], df["volume"]
+    ).on_balance_volume()
+    df["adi"] = AccDistIndexIndicator(
+        df["high"], df["low"], df["close"], df["volume"]
+    ).acc_dist_index()
+
+    for w in [14, 20]:
+        df[f"mfi_{w}"] = MFIIndicator(
+            df["high"], df["low"], df["close"], df["volume"], window=w
+        ).money_flow_index()
+
+    for w in [12, 24, 48]:
+        vol_roll_mean = df["volume"].rolling(w).mean()
+        vol_roll_std = df["volume"].rolling(w).std().replace(0, 1e-6)
+        df[f"volume_z_{w}"] = (df["volume"] - vol_roll_mean) / vol_roll_std
+        df[f"volume_roc_{w}"] = df["volume"].pct_change(w)
+
+    # Volume-Price Divergence
+    df["vpd_5"] = (
+        (df["volume"] - df["volume"].rolling(5).mean())
+        * (df["close"] - df["close"].rolling(5).mean())
+    )
+    df["vpd_20"] = (
+        (df["volume"] - df["volume"].rolling(20).mean())
+        * (df["close"] - df["close"].rolling(20).mean())
+    )
+
+    # ======================
+    # Time & Cyclical Features
+    # ======================
+    df["hour"] = df.index.hour
+    df["dow"] = df.index.dayofweek
+    df["month"] = df.index.month
+
+    for col, period in [("hour", 24), ("dow", 7), ("month", 12)]:
+        df[f"{col}_sin"] = np.sin(2 * np.pi * df[col] / period)
+        df[f"{col}_cos"] = np.cos(2 * np.pi * df[col] / period)
+
+    # ======================
+    # Advanced Interaction Features
+    # ======================
+    df["rsi_vol"] = df["rsi_14"] * df["volatility_24"]
+    df["macd_vol"] = df["macd_12_26"] * df["volatility_24"]
+    df["adx_vol"] = df["adx_14"] * df["volatility_24"]
+
+    for w in [3, 5]:
+        df[f"price_rsi_div_{w}"] = (
+            (df["close"].diff(w) / df["close"].shift(w).replace(0, np.nan))
+            - (df["rsi_14"].diff(w) / 100)
+        )
+        df[f"price_macd_div_{w}"] = (
+            (df["close"].diff(w) / df["close"].shift(w).replace(0, np.nan))
+            - df["macd_12_26"].diff(w)
+        )
+
+    # ======================
+    # Volatility Regime (One-Hot)
+    # ======================
+    vol_series = df["volatility_24"].copy()
+    df["vol_regime_low"] = 0
+    df["vol_regime_medium"] = 0
+    df["vol_regime_high"] = 0
+
+    if len(vol_series.dropna()) > 100:
+        low_threshold = vol_series.expanding(min_periods=100).quantile(0.25)
+        high_threshold = vol_series.expanding(min_periods=100).quantile(0.75)
+
+        df["vol_regime_low"] = (vol_series < low_threshold).fillna(0).astype(int)
+        df["vol_regime_medium"] = (
+            (vol_series >= low_threshold) & (vol_series <= high_threshold)
+        ).fillna(0).astype(int)
+        df["vol_regime_high"] = (vol_series > high_threshold).fillna(0).astype(int)
+
+    # ======================
+    # Lagged Features (numeric only)
+    # ======================
+    numerical_cols = df.select_dtypes(include=[np.number]).columns
+    for feature in numerical_cols:
+        if feature.startswith("vol_regime"):
+            continue
+        for lag in [1, 2, 3, 6, 12]:
+            df[f"{feature}_lag{lag}"] = df[feature].shift(lag)
+
+    # ======================
+    # Rolling-Window Summaries
+    # ======================
+    for window in [6, 12, 24]:
+        for col in ["rsi_14", "macd_12_26", "volume"]:
+            df[f"{col}_ma_{window}"] = df[col].rolling(window).mean()
+            df[f"{col}_std_{window}"] = df[col].rolling(window).std()
+
+    # ======================
+    # Market Regime Detection via Bayesian GMM
+    # ======================
+    regime_features = ["return_1h", "volatility_24", "rsi_14", "volume_z_24"]
+    regime_data = df[regime_features].dropna()
+
+    if len(regime_data) > 1000:
+        try:
+            from sklearn.mixture import BayesianGaussianMixture
+
+            bgm = BayesianGaussianMixture(
+                n_components=5,
+                covariance_type="full",
+                weight_concentration_prior_type="dirichlet_process",
+                random_state=42,
+                max_iter=500,
+            )
+            df["regime"] = -1
+            df.loc[regime_data.index, "regime"] = bgm.fit_predict(regime_data)
+            df["regime_change"] = (
+                df["regime"].diff().abs().gt(0).astype(int)
+            )
+            df = pd.get_dummies(df, columns=["regime"], prefix="regime")
+        except Exception as e:
+            print(f"⚠️ Market regime detection failed: {e}")
+
+    # ======================
+    # Cleanup
+    # ======================
+    intermediate_cols = (
+        ["hl2", "hlc3", "ohlc4", "hour", "dow", "month"]
+        + [c for c in df.columns if c.startswith("bb_") or c.startswith("kc_")]
+    )
+    df.drop(columns=intermediate_cols, inplace=True, errors="ignore")
+
+    # Replace infinities with NaN, then forward-fill up to 2 bars, then drop remaining NaNs
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df = df.ffill(limit=2).dropna()
+
+    print(f"✅ Built {len(df.columns)} features | {len(df)} samples")
+    return df
+
+def create_labels_regression(df: pd.DataFrame, horizon: int = 3) -> pd.DataFrame:
+    """Creates TP, SL, and combined ratio targets"""
+    df = df.copy()
+
+    future_high = df["high"].shift(-horizon).rolling(horizon, min_periods=1).max()
+    future_low = df["low"].shift(-horizon).rolling(horizon, min_periods=1).min()
+    close = df["close"]
+
+    df["y_tp"] = (future_high / close) - 1.0
+    df["y_sl"] = (future_low / close) - 1.0
+    df["y_ratio"] = df["y_tp"] / (abs(df["y_sl"]) + 1e-6)
+
+    return df
+
+def create_labels_classification(df: pd.DataFrame, horizon: int = 3) -> pd.DataFrame:
+    """Creates binary labels for long-only strategy"""
+    df = df.copy()
+    future_high = df["high"].shift(-horizon).rolling(horizon, min_periods=1).max()
+    
+    volatility = df["volatility_24"].clip(lower=0.001)
+    upper_threshold = df["close"] * (1 + 1.0 * volatility)
+    
+    long_condition = (future_high > upper_threshold) & (df["rsi_14"] > 40)
+    
+    if "volume_z_24" in df.columns:
+        vol_z = df["volume_z_24"]
+        long_condition &= (vol_z > -0.5)
+    
+    df["y_class"] = 0
+    df.loc[long_condition, "y_class"] = 1
+    
+    return df
+
+def feature_selection(
+    X: pd.DataFrame,
+    y: pd.Series,
+    n_features: int = 40,
+    task: str = "classification",  # "classification" or "regression"
+) -> pd.Index:
+    """
+    Robust feature selection pipeline that works for both classification and regression.
+    
+    Steps:
+      1) Variance threshold
+      2) High-correlation filter
+      3) Mutual information prescreen (top 100)
+      4) RFE to exactly n_features
+      5) Optional forward SFS if RFE still > n_features*1.5
+    
+    Returns the Index of selected feature names.
+    
+    Args:
+      - X: DataFrame of shape (n_samples, n_candidate_features)
+      - y: Series of labels (binary/discrete for classification; continuous for regression)
+      - n_features: number of features to select via RFE/SFS
+      - task: "classification" or "regression"
+    """
+    start_time = time.time()
+    print(f"🔍 Starting feature selection on {X.shape[1]} features for {task}...")
+
+    # 1) Remove low-variance features
+    var_thresh = VarianceThreshold(threshold=0.01)
+    X_var = var_thresh.fit_transform(X)
+    kept_mask = var_thresh.get_support()
+    X_filtered = pd.DataFrame(X_var, columns=X.columns[kept_mask], index=X.index)
+    print(f"🧹 Variance threshold: {X.shape[1] - X_filtered.shape[1]} features removed")
+
+    # 2) Remove high-correlation features (>0.95)
+    corr_matrix = X_filtered.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    high_corr = [col for col in upper.columns if any(upper[col] > 0.95)]
+    X_filtered.drop(columns=high_corr, inplace=True, errors="ignore")
+    print(f"🧹 Correlation filter: {len(high_corr)} features removed")
+
+    # 3) Mutual Information prescreen (top 100)
+    if X_filtered.shape[0] > 10000:
+        sample_idx = np.random.choice(X_filtered.index, 10000, replace=False)
+        X_sample = X_filtered.loc[sample_idx]
+        y_sample = y.loc[sample_idx]
+    else:
+        X_sample = X_filtered
+        y_sample = y
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if task == "classification":
+            mi_scores = mutual_info_classif(X_sample, y_sample, random_state=42, n_neighbors=5)
+        else:  # regression
+            mi_scores = mutual_info_regression(X_sample, y_sample, random_state=42, n_neighbors=5)
+
+    mi_ranking = pd.Series(mi_scores, index=X_filtered.columns).sort_values(ascending=False)
+    top_mi_features = mi_ranking.head(min(100, len(mi_ranking))).index
+    print(f"📊 MI selected {len(top_mi_features)} candidate features")
+
+    # 4) Recursive Feature Elimination (RFE) to exactly n_features
+    if task == "classification":
+        estimator = GradientBoostingClassifier(n_estimators=50, random_state=42)
+    else:
+        estimator = GradientBoostingRegressor(n_estimators=50, random_state=42)
+
+    selector = RFE(
+        estimator,
+        n_features_to_select=n_features,
+        step=0.1,
+        importance_getter="feature_importances_"
+    )
+    selector.fit(X_filtered[top_mi_features], y)
+    rfe_features = X_filtered[top_mi_features].columns[selector.support_]
+
+    # 5) If RFE still returned too many (> 1.5 * n_features), do forward SFS
+    if len(rfe_features) > n_features * 1.5:
+        if task == "classification":
+            sfs_estimator = RandomForestClassifier(n_estimators=25, random_state=42)
+        else:
+            sfs_estimator = RandomForestRegressor(n_estimators=25, random_state=42)
+
+        sfs = SequentialFeatureSelector(
+            sfs_estimator,
+            n_features_to_select=n_features,
+            direction="forward",
+            cv=3,
+            n_jobs=-1
+        )
+        sfs.fit(X_filtered[rfe_features], y)
+        final_features = rfe_features[sfs.get_support()]
+    else:
+        final_features = rfe_features
+
+    print(f"⏱️ Feature selection completed in {time.time() - start_time:.2f}s")
+    print(f"🎯 Final feature count: {len(final_features)}")
+    return final_features
+
+
+
+def generate_dataset(
+    raw_path: str,
+    output_dir: str,
+    version: str = "v1",
+    task: str = "classification",
+    horizon: int = 3,
+    clean: bool = True
+):
+    """Complete dataset generation pipeline with enhanced feature preservation"""
+    # 1. Load and prepare data
+    df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
+    print(f"✅ Loaded {len(df)} rows from {raw_path}")
+    
+    # 2. Feature engineering
+    df = build_features(df)
+    
+    # 3. Create labels based on task
+    if task == "classification":
+        df = create_labels_classification(df, horizon)
+        label_col = "y_class"
+    elif task == "regression":
+        df = create_labels_regression(df, horizon)
+        label_col = "y_ratio"
+    else:
+        raise ValueError("Task must be 'classification' or 'regression'")
+    
+    # 4. Clean data
+    if clean:
+        initial_count = len(df)
+        df = df[df[label_col].notna()]
+        print(f"🧹 Removed {initial_count - len(df)} rows with NaN labels")
+    
+    # 5. Prepare features and labels
+    feature_cols = [c for c in df.columns if c not in 
+                   {"open", "high", "low", "close", "volume", "y_class", "y_tp", "y_sl", "y_ratio"}]
+    X = df[feature_cols]
+    
+    if task == "classification":
+        y = df[["y_class"]]
+    else:
+        y = df[["y_tp", "y_sl", "y_ratio"]]
+    
+    # 6. Handle missing values
+    X.replace([np.inf, -np.inf], np.nan, inplace=True)
+    X.fillna(0, inplace=True)
+    
+    # 7. Feature selection
+    if task == "regression":
+        y_selection = y["y_ratio"]
+        selected_features = feature_selection(X, y_selection, n_features=40, task="regression")
+    else:  # classification
+        y_selection = y["y_class"]
+        selected_features = feature_selection(X, y_selection, n_features=40, task="classification")
+
+    X_sel = X[selected_features]
+    
+    # Save selected feature names
+    os.makedirs(output_dir, exist_ok=True)
+    feature_name_path = os.path.join(output_dir, f"selected_features_{version}.csv")
+    pd.Series(selected_features).to_csv(feature_name_path, index=False)
+    print(f"💾 Saved selected feature names to {feature_name_path}")
+    
+    # 8. PCA Transformation (with preservation)
+    if len(selected_features) > 30:
+        # Apply PCA with standardization
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_sel)
+        
+        pca = PCA(n_components=0.95, random_state=42)
+        X_pca = pca.fit_transform(X_scaled)
+        
+        # Save transformation artifacts
+        dump(scaler, os.path.join(output_dir, f"scaler_{version}.joblib"))
+        dump(pca, os.path.join(output_dir, f"pca_{version}.joblib"))
+        
+        # Create readable PCA features
+        pca_cols = [f"PC{i+1}" for i in range(X_pca.shape[1])]
+        X_final = pd.DataFrame(X_pca, index=X.index, columns=pca_cols)
+        
+        # Save component mapping
+        components_df = pd.DataFrame(
+            pca.components_,
+            columns=selected_features,
+            index=pca_cols
+        )
+        components_df.to_csv(os.path.join(output_dir, f"pca_components_{version}.csv"))
+        
+        # Save feature mapping
+        feature_mapper = {
+            "feature_set": "pca",
+            "original_features": list(selected_features),
+            "pca_components": pca_cols,
+            "scaler": f"scaler_{version}.joblib",
+            "pca": f"pca_{version}.joblib"
+        }
+        dump(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
+        print(f"📊 PCA reduced to {len(pca_cols)} components (95% variance)")
+    else:
+        X_final = X_sel
+        # Save feature mapping for non-PCA case
+        feature_mapper = {
+            "feature_set": "original",
+            "features": list(selected_features),
+            "imputation": "replace_inf_and_fillna(0)"
+        }
+        dump(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
+        print("📊 Using original features without PCA")
+    
+    # 9. Save dataset
+    X_path = os.path.join(output_dir, f"X_{version}.parquet")
+    y_path = os.path.join(output_dir, f"y_{version}.parquet")
+    
+    X_final.to_parquet(X_path)
+    y.to_parquet(y_path)
+    
+    print(f"✅ Dataset saved to {output_dir}")
+    print(f"📊 Final shape: {X_final.shape} features, {y.shape} labels")
+    
+    # 10. Create feature reference file for deployment
+    feature_reference = {
+        "required_inputs": ["open", "high", "low", "close", "volume"],
+        "feature_engineering": "build_features() function",
+        "selected_features": list(selected_features),
+        "preprocessing_steps": [
+            "replace([np.inf, -np.inf], np.nan)",
+            "fillna(0)"
+        ],
+        "pca_applied": len(selected_features) > 30,
+        "feature_mapper": f"feature_mapper_{version}.joblib",
+        "version": version,
+        "timestamp": pd.Timestamp.now().isoformat()
+    }
+    
+    if feature_reference["pca_applied"]:
+        feature_reference["pca_components"] = pca_cols
+        feature_reference["scaler"] = f"scaler_{version}.joblib"
+        feature_reference["pca_model"] = f"pca_{version}.joblib"
+    
+    dump(feature_reference, os.path.join(output_dir, f"feature_reference_{version}.joblib"))
+    print(f"📝 Saved comprehensive feature reference for deployment")
+
+# For deployment
+def load_feature_mapper(output_dir: str, version: str):
+    """Load feature mapper for deployment"""
+    mapper_path = os.path.join(output_dir, f"feature_mapper_{version}.joblib")
+    return load(mapper_path)
+
+def prepare_inference_data(raw_data: pd.DataFrame, output_dir: str, version: str) -> pd.DataFrame:
+    """
+    Prepare data for inference using saved feature engineering artifacts
+    Returns DataFrame with correct features for model input
+    """
+    # 1. Load feature mapper
+    feature_mapper = load_feature_mapper(output_dir, version)
+    
+    # 2. Apply feature engineering
+    df = build_features(raw_data)
+    
+    # 3. Select features
+    if feature_mapper["feature_set"] == "pca":
+        features = feature_mapper["original_features"]
+    else:
+        features = feature_mapper["features"]
+    
+    X = df[features]
+    
+    # 4. Apply preprocessing
+    X.replace([np.inf, -np.inf], np.nan, inplace=True)
+    X.fillna(0, inplace=True)
+    
+    # 5. Apply transformations if PCA was used
+    if feature_mapper["feature_set"] == "pca":
+        scaler = load(os.path.join(output_dir, feature_mapper["scaler"]))
+        pca = load(os.path.join(output_dir, feature_mapper["pca"]))
+        
+        X_scaled = scaler.transform(X)
+        X_final = pd.DataFrame(
+            pca.transform(X_scaled),
+            index=X.index,
+            columns=feature_mapper["pca_components"]
+        )
+    else:
+        X_final = X
+        
+    return X_final
+
+if __name__ == "__main__":
+    # Example usage
+    generate_dataset(
+        raw_path="data/raw/BTCUSDT_1h.csv",
+        output_dir="data/processed/classification",
+        version="v1",
+        task="classification",
+        horizon=3
+    )
+    
+    generate_dataset(
+        raw_path="data/raw/BTCUSDT_1h.csv",
+        output_dir="data/processed/regression",
+        version="v1",
+        task="regression",
+        horizon=3
+    )
