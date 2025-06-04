@@ -30,3 +30,18 @@ generate_dataset(
 
 If `use_gpu` is disabled (default), CPU implementations are used.
 
+## Labels
+
+During dataset generation, targets are created in
+[`utils/build_dataset.py`](utils/build_dataset.py) by the
+`create_labels_classification` and `create_labels_regression` functions.
+These produce the following columns:
+
+- **`y_class`** – binary label for "buy vs. hold" classification. It becomes `1`
+  when the next `future_high` exceeds `close * (1 + volatility)` and the
+  14‑period RSI is greater than 40 (with a mild volume filter when available).
+- **`y_tp`** and **`y_sl`** – take‑profit and stop‑loss returns calculated from
+  `future_high` and `future_low` relative to the current close price.
+- **`y_ratio`** – ratio of `y_tp` to the absolute value of `y_sl`; used as the
+  primary regression target.
+
