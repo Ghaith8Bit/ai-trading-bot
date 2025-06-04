@@ -50,3 +50,23 @@ def test_build_features_unsupervised():
 
     assert "wavelet_c1" in features.columns
     assert any(col.startswith("ae_feat") for col in features.columns)
+
+
+def test_build_features_higher_intervals():
+    rng = pd.date_range("2021-01-01", periods=60, freq="H")
+    base = np.linspace(100, 160, num=60)
+    df = pd.DataFrame(
+        {
+            "open": base,
+            "high": base + 1,
+            "low": base - 1,
+            "close": base + 0.5,
+            "volume": np.linspace(1000, 1060, num=60),
+        },
+        index=rng,
+    )
+
+    features = build_features(df, higher_intervals=["4H"])
+
+    assert "rsi_14_4H" in features.columns
+    assert "close_ma_3_4H" in features.columns
