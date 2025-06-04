@@ -1,10 +1,10 @@
-import os, sys
+import os
+import sys
 import pandas as pd
 import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from utils.build_dataset import generate_dataset
+from utils.build_dataset import generate_dataset  # noqa: E402
 
 
 def test_generate_dataset_regime_encoding(tmp_path):

@@ -1,9 +1,10 @@
-import os, sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import os
+import sys
 import pandas as pd
 import numpy as np
 
-from utils.build_dataset import build_features
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from utils.build_dataset import build_features  # noqa: E402
 
 
 def test_build_features_basic():
