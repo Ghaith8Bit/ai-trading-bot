@@ -73,6 +73,7 @@ def test_build_features_higher_intervals():
 
 
 def test_build_features_rbf():
+
     rng = pd.date_range("2021-01-01", periods=60, freq="h")
     base = np.linspace(100, 160, num=60)
     df = pd.DataFrame(

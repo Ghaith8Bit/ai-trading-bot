@@ -48,3 +48,19 @@ def test_feature_selection_gpu_tree_method():
 
     assert calls["kwargs"]["tree_method"] == "gpu_hist"
     assert len(selected) == 4
+
+
+def test_feature_selection_logs(tmp_path):
+    X, y = _dummy_data()
+    log_file = tmp_path / "fs_log.csv"
+    selected = feature_selection(
+        X,
+        y,
+        n_features=3,
+        task="classification",
+        use_gpu=False,
+        log_path=str(log_file),
+    )
+    df = pd.read_csv(log_file)
+    assert list(df.columns) == ["feature", "importance"]
+    assert set(df["feature"]) == set(selected)
