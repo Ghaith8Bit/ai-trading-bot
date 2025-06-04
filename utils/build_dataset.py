@@ -437,7 +437,7 @@ def generate_dataset(
     horizon: int = 3,
     clean: bool = True
 ):
-    """Complete dataset generation pipeline with enhanced feature preservation"""
+    """Complete dataset generation pipeline with feature engineering, feature selection and optional PCA."""
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
     print(f"✅ Loaded {len(df)} rows from {raw_path}")
