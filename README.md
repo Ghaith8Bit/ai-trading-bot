@@ -82,8 +82,7 @@ After creating a processed dataset, train a simple model with
 `examples/train_example.py`:
 
 ```bash
-python examples/train_example.py --task classification
+python examples/train_classification.py
 ```
 
 The script saves the trained model under `models/` and prints basic metrics.
-
