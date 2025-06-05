@@ -54,9 +54,10 @@ All numeric columns are stored as `float32` when datasets are generated. This
 cuts the disk and memory usage roughly in half compared to `float64` storage.
 
 ### GPU Acceleration
-Set `use_gpu=True` when calling `generate_dataset` to enable faster feature
-selection. This requires a CUDA capable GPU, the NVIDIA toolkit, and optionally
-RAPIDS packages such as `cuml` and `cupy`.
+Set `use_gpu=True` when calling `generate_dataset` **or** `build_features` to
+enable GPU-accelerated rolling statistics. This requires a CUDA capable GPU,
+the NVIDIA toolkit and the RAPIDS `cudf` library. Optional packages such as
+`cuml` and `cupy` can further speed up feature selection.
 
 ### Additional Market Data
 `build_features` and `generate_dataset` accept an `extra_data` dictionary of
