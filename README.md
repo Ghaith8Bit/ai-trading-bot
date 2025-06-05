@@ -106,9 +106,17 @@ provided script or the accompanying notebook.
 
 ### Using the script
 
+Specify the dataset directory and version to load. Add `--grid-search` to enable
+hyperparameter tuning.
+
 ```bash
-python examples/train_classification.py
+python examples/train_classification.py \
+    --data-dir data/processed/classification \
+    --version v1 \
+    [--grid-search]
 ```
+The optional `--grid-search` flag performs a small hyperparameter search over
+`LogisticRegression` before training.
 
 ### Using the notebook
 
