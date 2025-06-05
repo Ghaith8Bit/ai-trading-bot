@@ -1,9 +1,10 @@
 from pathlib import Path
+import argparse
 import pandas as pd
 from joblib import dump
 from utils import feature_selection
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, TimeSeriesSplit, GridSearchCV
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -20,10 +21,27 @@ import seaborn as sns
 
 
 def main():
-    repo_root = Path(__file__).resolve().parents[1]
-    base = repo_root / "data/processed/classification"
-    X = pd.read_parquet(base / "X_v1.parquet")
-    y = pd.read_parquet(base / "y_v1.parquet").squeeze()
+    parser = argparse.ArgumentParser(description="Train a simple classifier")
+    parser.add_argument(
+        "--data-dir",
+        default="data/processed/classification",
+        help="Directory containing processed dataset",
+    )
+    parser.add_argument(
+        "--version",
+        default="v1",
+        help="Dataset version (e.g. v1)",
+    )
+    parser.add_argument(
+        "--grid-search",
+        action="store_true",
+        help="Perform hyperparameter search over LogisticRegression",
+    )
+    args = parser.parse_args()
+
+    base = Path(args.data_dir)
+    X = pd.read_parquet(base / f"X_{args.version}.parquet")
+    y = pd.read_parquet(base / f"y_{args.version}.parquet").squeeze()
 
     X = X.sort_index()
     y = y.loc[X.index]
@@ -44,15 +62,29 @@ def main():
     X_train = X_train[selected]
     X_test = X_test[selected]
 
-    lr = LogisticRegression(max_iter=1000)
-    # Cross-validation on the training portion
+    base_lr = LogisticRegression(max_iter=1000)
+    tscv = TimeSeriesSplit(n_splits=5)
+    if args.grid_search:
+        param_grid = {
+            "C": [0.01, 0.1, 1.0, 10.0],
+            "penalty": ["l1", "l2"],
+            "solver": ["liblinear"],
+        }
+        search = GridSearchCV(base_lr, param_grid, cv=tscv, scoring="f1")
+        search.fit(X_train, y_train)
+        lr = search.best_estimator_
+        print(f"Best params: {search.best_params_}")
+    else:
+        lr = base_lr
+
+    # Cross-validation on the training portion using chronological splits
     cv_metrics = {}
     for metric in ["accuracy", "precision", "recall", "f1", "roc_auc"]:
         scores = cross_val_score(
             lr,
             X_train,
             y_train,
-            cv=5,
+            cv=tscv,
             scoring=metric,
         )
         cv_metrics[metric] = scores.mean()
@@ -161,8 +193,9 @@ def main():
 
     models_dir = Path("models")
     models_dir.mkdir(exist_ok=True)
-    dump(lr, models_dir / "classification_model_v1.joblib")
-    print(f"Saved model to {models_dir / 'classification_model_v1.joblib'}")
+    model_path = models_dir / f"classification_model_{args.version}.joblib"
+    dump(lr, model_path)
+    print(f"Saved model to {model_path}")
 
 
 if __name__ == "__main__":
