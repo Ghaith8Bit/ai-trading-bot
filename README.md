@@ -11,8 +11,9 @@ regression targets.
   - [GPU Acceleration](#gpu-acceleration)
   - [Additional Market Data](#additional-market-data)
   - [Unsupervised Features](#unsupervised-features)
-  - [Time Series CV](#time-series-cv)
+- [Time Series CV](#time-series-cv)
 - [Labels](#labels)
+- [Build Dataset Details](#build-dataset-details)
 - [Example Training](#example-training)
 
 ## Installation
@@ -116,3 +117,8 @@ training metrics.
 
 Both approaches save the trained model under `models/` and display basic
 metrics.
+
+## Build Dataset Details
+
+For a full explanation of every feature engineered by `build_dataset.py`, see
+[the dedicated reference](docs/build_dataset.md).
