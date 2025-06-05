@@ -12,3 +12,8 @@ joblib
 PyWavelets
 category_encoders
 pyarrow
+mlflow  # experiment tracking
+wandb   # experiment tracking
+cudf-cu11  # GPU-accelerated DataFrame
+cuml-cu11  # GPU feature selection
+shap
