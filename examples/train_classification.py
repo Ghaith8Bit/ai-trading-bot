@@ -39,6 +39,7 @@ def main():
         task="classification",
         importance_method="permutation",
         importance_threshold=0.01,
+        ml_logger="mlflow",
     )
     X_train = X_train[selected]
     X_test = X_test[selected]

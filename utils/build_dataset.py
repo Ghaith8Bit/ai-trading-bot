@@ -666,6 +666,8 @@ def feature_selection(
     importance_threshold: float = 0.0,
     log_path: str | None = None,
     group_by_time: bool = False,
+    ml_logger: str | None = None,
+    tracking_uri: str | None = None,
 ) -> pd.Index:
     """
     Robust feature selection pipeline that works for both classification and regression.
@@ -696,20 +698,42 @@ def feature_selection(
     start_time = time.time()
     print(f"🔍 Starting feature selection on {X.shape[1]} features for {task}...")
 
+    mlflow_run = None
+    wandb_run = None
+    metrics: dict[str, float] = {}
+
+    if ml_logger == "mlflow":
+        import mlflow
+
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        mlflow_run = mlflow.start_run()
+        mlflow.log_params({"task": task, "target_features": n_features})
+    elif ml_logger == "wandb":
+        import wandb
+
+        wandb_run = wandb.init(project="feature_selection", dir=tracking_uri)
+        wandb_run.config.update({"task": task, "target_features": n_features})
+
+    t0 = time.time()
     # 1) Remove low-variance features
     var_thresh = VarianceThreshold(threshold=0.01)
     X_var = var_thresh.fit_transform(X)
     kept_mask = var_thresh.get_support()
     X_filtered = pd.DataFrame(X_var, columns=X.columns[kept_mask], index=X.index)
+    metrics["variance_time"] = time.time() - t0
     print(f"🧹 Variance threshold: {X.shape[1] - X_filtered.shape[1]} features removed")
 
+    t0 = time.time()
     # 2) Remove high-correlation features (>0.95)
     corr_matrix = X_filtered.corr().abs()
     upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     high_corr = [col for col in upper.columns if any(upper[col] > 0.95)]
     X_filtered.drop(columns=high_corr, inplace=True, errors="ignore")
+    metrics["correlation_time"] = time.time() - t0
     print(f"🧹 Correlation filter: {len(high_corr)} features removed")
 
+    t0 = time.time()
     # 3) Mutual Information prescreen (top 100)
     if X_filtered.shape[0] > 10000:
         sample_idx = np.random.choice(X_filtered.index, 10000, replace=False)
@@ -756,6 +780,7 @@ def feature_selection(
 
     mi_ranking = pd.Series(mi_scores, index=X_filtered.columns).sort_values(ascending=False)
     top_mi_features = mi_ranking.head(min(100, len(mi_ranking))).index
+    metrics["mutual_info_time"] = time.time() - t0
     print(f"📊 MI selected {len(top_mi_features)} candidate features")
 
     # 4) Recursive Feature Elimination (RFE) to exactly n_features
@@ -788,8 +813,10 @@ def feature_selection(
         step=0.1,
         importance_getter="feature_importances_"
     )
+    t0 = time.time()
     selector.fit(X_filtered[top_mi_features], y)
     rfe_features = X_filtered[top_mi_features].columns[selector.support_]
+    metrics["rfe_time"] = time.time() - t0
 
     if log_path:
         importances = pd.Series(
@@ -813,8 +840,10 @@ def feature_selection(
             cv=cv_obj if cv_obj is not None else 3,
             n_jobs=-1
         )
+        t0 = time.time()
         sfs.fit(X_filtered[rfe_features], y)
         final_features = rfe_features[sfs.get_support()]
+        metrics["sfs_time"] = time.time() - t0
     else:
         final_features = rfe_features
 
@@ -874,8 +903,21 @@ def feature_selection(
                 )
             final_features = pd.Index(keep)
 
-    print(f"⏱️ Feature selection completed in {time.time() - start_time:.2f}s")
+    total_time = time.time() - start_time
+    metrics["total_time"] = total_time
+    metrics["selected_features"] = len(final_features)
+    print(f"⏱️ Feature selection completed in {total_time:.2f}s")
     print(f"🎯 Final feature count: {len(final_features)}")
+
+    if ml_logger == "mlflow":
+        import mlflow
+
+        mlflow.log_metrics(metrics)
+        mlflow.end_run()
+    elif ml_logger == "wandb" and wandb_run is not None:
+        wandb_run.log(metrics)
+        wandb_run.finish()
+
     return final_features
 
 
@@ -890,6 +932,9 @@ def generate_dataset(
     use_gpu: bool = False,
     regime_target_encoding: bool = False,
     extra_data: dict[str, pd.DataFrame] | None = None,
+    ml_logger: str | None = None,
+    tracking_uri: str | None = None,
+    window_scheme: str | Callable | None = None,
 ):
     """Complete dataset generation pipeline.
 
@@ -908,14 +953,42 @@ def generate_dataset(
             to ``build_features`` for feature augmentation.
         regime_target_encoding: apply target encoding to the ``regime`` column
             after label creation if present.
+        ml_logger: "mlflow" or "wandb" to enable experiment tracking.
+        tracking_uri: optional tracking URI or directory used by the logger.
+        window_scheme: forwarded to ``build_features`` for custom window logic.
     """
+    metrics: dict[str, float] = {}
+    run_mlflow = None
+    run_wandb = None
+
+    if ml_logger == "mlflow":
+        import mlflow
+
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        run_mlflow = mlflow.start_run()
+        mlflow.log_params({
+            "task": task,
+            "window_scheme": window_scheme,
+        })
+    elif ml_logger == "wandb":
+        import wandb
+
+        run_wandb = wandb.init(project="dataset_generation", dir=tracking_uri)
+        run_wandb.config.update({"task": task, "window_scheme": window_scheme})
+
+    start = time.time()
     # 1. Load and prepare data
     df = pd.read_csv(raw_path, parse_dates=["timestamp"], index_col="timestamp")
+    metrics["load_time"] = time.time() - start
     print(f"✅ Loaded {len(df)} rows from {raw_path}")
     
+    t0 = time.time()
     # 2. Feature engineering
-    df = build_features(df, extra_data=extra_data)
+    df = build_features(df, extra_data=extra_data, window_scheme=window_scheme)
+    metrics["feature_engineering_time"] = time.time() - t0
     
+    t0 = time.time()
     # 3. Create labels based on task
     if task == "classification":
         df = create_labels_classification(df, horizon)
@@ -925,6 +998,7 @@ def generate_dataset(
         label_col = "y_ratio"
     else:
         raise ValueError("Task must be 'classification' or 'regression'")
+    metrics["label_time"] = time.time() - t0
 
     # 3b. Optional target encoding of market regime
     if regime_target_encoding and "regime" in df.columns:
@@ -933,20 +1007,29 @@ def generate_dataset(
 
             target_col = "y_class" if task == "classification" else "y_ratio"
             te = TargetEncoder(cols=["regime"])
+            enc_start = time.time()
             encoded = te.fit_transform(df[["regime"]], df[target_col])
             df["regime_te"] = encoded["regime"]
+            metrics["target_encoding_time"] = time.time() - enc_start
         except Exception as e:
             print(f"⚠️ Regime target encoding failed: {e}")
     
     # 4. Clean data
     if clean:
+        clean_start = time.time()
         initial_count = len(df)
         df = df[df[label_col].notna()]
+        metrics["clean_time"] = time.time() - clean_start
         print(f"🧹 Removed {initial_count - len(df)} rows with NaN labels")
     
     # 5. Prepare features and labels
-    feature_cols = [c for c in df.columns if c not in 
+    feature_cols = [c for c in df.columns if c not in
                    {"open", "high", "low", "close", "volume", "y_class", "y_tp", "y_sl", "y_ratio"}]
+    if ml_logger == "mlflow":
+        import mlflow
+        mlflow.log_param("initial_feature_count", len(feature_cols))
+    elif ml_logger == "wandb" and run_wandb is not None:
+        run_wandb.config.update({"initial_feature_count": len(feature_cols)})
     X = df[feature_cols]
     
     if task == "classification":
@@ -959,6 +1042,7 @@ def generate_dataset(
     X.fillna(0, inplace=True)
     
     # 7. Feature selection
+    fs_start = time.time()
     if task == "regression":
         y_selection = y["y_ratio"]
         selected_features = feature_selection(
@@ -967,6 +1051,8 @@ def generate_dataset(
             n_features=40,
             task="regression",
             use_gpu=use_gpu,
+            ml_logger=ml_logger,
+            tracking_uri=tracking_uri,
         )
     else:  # classification
         y_selection = y["y_class"]
@@ -976,13 +1062,22 @@ def generate_dataset(
             n_features=40,
             task="classification",
             use_gpu=use_gpu,
+            ml_logger=ml_logger,
+            tracking_uri=tracking_uri,
         )
+    metrics["feature_selection_time"] = time.time() - fs_start
 
     if regime_target_encoding and "regime_te" in X.columns:
         if "regime_te" not in selected_features:
             selected_features = list(selected_features) + ["regime_te"]
 
     X_sel = X[selected_features]
+
+    if ml_logger == "mlflow":
+        import mlflow
+        mlflow.log_param("selected_feature_count", len(selected_features))
+    elif ml_logger == "wandb" and run_wandb is not None:
+        run_wandb.config.update({"selected_feature_count": len(selected_features)})
     
     # Save selected feature names
     os.makedirs(output_dir, exist_ok=True)
@@ -992,6 +1087,7 @@ def generate_dataset(
     
     # 8. PCA Transformation (with preservation)
     if len(selected_features) > 30:
+        pca_start = time.time()
         # Apply PCA with standardization
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_sel)
@@ -1024,6 +1120,7 @@ def generate_dataset(
             "pca": f"pca_{version}.joblib"
         }
         dump(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
+        metrics["pca_time"] = time.time() - pca_start
         print(f"📊 PCA reduced to {len(pca_cols)} components (95% variance)")
     else:
         X_final = X_sel
@@ -1034,6 +1131,7 @@ def generate_dataset(
             "imputation": "replace_inf_and_fillna(0)"
         }
         dump(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
+        metrics["pca_time"] = 0.0
         print("📊 Using original features without PCA")
     
     # 9. Save dataset
@@ -1046,11 +1144,14 @@ def generate_dataset(
     y_num_cols = y.select_dtypes(include=[np.number]).columns
     y[y_num_cols] = y[y_num_cols].astype(np.float32)
 
+    save_start = time.time()
     X_final.to_parquet(X_path)
     y.to_parquet(y_path)
-    
+    metrics["save_time"] = time.time() - save_start
+
     print(f"✅ Dataset saved to {output_dir}")
     print(f"📊 Final shape: {X_final.shape} features, {y.shape} labels")
+    metrics["total_time"] = time.time() - start
     
     # 10. Create feature reference file for deployment
     feature_reference = {
@@ -1077,6 +1178,19 @@ def generate_dataset(
         os.path.join(output_dir, f"feature_reference_{version}.joblib"),
     )
     print("📝 Saved comprehensive feature reference for deployment")
+
+    if ml_logger == "mlflow":
+        import mlflow
+
+        mlflow.log_metrics(metrics)
+        mlflow.log_artifact(feature_name_path)
+        mlflow.log_artifact(os.path.join(output_dir, f"feature_reference_{version}.joblib"))
+        mlflow.end_run()
+    elif ml_logger == "wandb" and run_wandb is not None:
+        run_wandb.log(metrics)
+        run_wandb.save(feature_name_path)
+        run_wandb.save(os.path.join(output_dir, f"feature_reference_{version}.joblib"))
+        run_wandb.finish()
 
 # For deployment
 def load_feature_mapper(output_dir: str, version: str):

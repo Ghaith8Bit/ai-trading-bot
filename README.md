@@ -37,11 +37,17 @@ generate_dataset(
     task="classification",
     horizon=3,
     regime_target_encoding=True,
+    ml_logger="mlflow",  # or "wandb"
+    tracking_uri="file:./mlruns",
 )
 ```
 
 When enabled, the market ``regime`` feature is encoded against the target
 variable using `category_encoders.TargetEncoder`.
+
+Set ``ml_logger`` to ``"mlflow"`` or ``"wandb"`` (with optional ``tracking_uri``)
+to automatically record parameters, metrics and artifacts during dataset
+creation.
 
 ### Reduced Memory Footprint
 All numeric columns are stored as `float32` when datasets are generated. This
