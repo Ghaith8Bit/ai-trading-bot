@@ -572,6 +572,8 @@ def build_features(
         try:
             from sklearn.mixture import BayesianGaussianMixture
 
+            window = 1000
+            df["regime"] = -1
             bgm = BayesianGaussianMixture(
                 n_components=5,
                 covariance_type="full",
@@ -579,11 +581,17 @@ def build_features(
                 random_state=42,
                 max_iter=500,
             )
-            df["regime"] = -1
-            df.loc[regime_data.index, "regime"] = bgm.fit_predict(regime_data)
-            df["regime_change"] = (
-                df["regime"].diff().abs().gt(0).astype(int)
-            )
+
+            regimes = []
+            for i, idx in enumerate(regime_data.index):
+                end = i + 1
+                start = max(0, end - window)
+                hist = regime_data.iloc[start:end]
+                labels = bgm.fit_predict(hist)
+                regimes.append(labels[-1])
+
+            df.loc[regime_data.index, "regime"] = regimes
+            df["regime_change"] = df["regime"].diff().abs().gt(0).astype(int)
             regime_numeric = df["regime"].copy()
             df = pd.get_dummies(df, columns=["regime"], prefix="regime")
             df["regime"] = regime_numeric
