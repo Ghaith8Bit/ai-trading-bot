@@ -1,6 +1,7 @@
 import os
 import warnings
 import time
+import hashlib
 from typing import Callable
 
 import pandas as pd
@@ -51,6 +52,57 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPRegressor
 
 warnings.filterwarnings("ignore")
+
+
+def _validate_path(path: str, base_dir: str) -> str:
+    """Return absolute path if it resides within base_dir, else raise."""
+    abs_base = os.path.abspath(base_dir)
+    abs_path = os.path.abspath(path)
+    if not abs_path.startswith(abs_base + os.sep):
+        raise ValueError(f"Path {path} is outside of {base_dir}")
+    return abs_path
+
+
+def _sha256(path: str) -> str:
+    """Compute SHA256 hash of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _write_hash(path: str) -> None:
+    """Write sha256 hash next to the file."""
+    with open(path + ".sha256", "w") as f:
+        f.write(_sha256(path))
+
+
+def dump_joblib(obj, path: str) -> None:
+    dump(obj, path)
+    _write_hash(path)
+
+
+def load_joblib(path: str, base_dir: str):
+    abs_path = _validate_path(path, base_dir)
+    hash_file = abs_path + ".sha256"
+    if os.path.exists(hash_file):
+        with open(hash_file) as f:
+            expected = f.read().strip()
+        actual = _sha256(abs_path)
+        if expected != actual:
+            raise ValueError(f"Hash mismatch for {abs_path}")
+    return load(abs_path)
+
+
+def save_parquet(df: pd.DataFrame, path: str) -> None:
+    df.to_parquet(path)
+    _write_hash(path)
+
+
+def save_csv(data, path: str, **kwargs) -> None:
+    data.to_csv(path, **kwargs)
+    _write_hash(path)
 
 
 def _generate_windows(base_windows, df=None, scheme=None):
@@ -878,7 +930,7 @@ def feature_selection(
         ).sort_values(ascending=False)
         df_log = importances.reset_index()
         df_log.columns = ["feature", "importance"]
-        pd.DataFrame(df_log).to_csv(log_path, index=False)
+        save_csv(pd.DataFrame(df_log), log_path, index=False)
 
     # 5) If RFE still returned too many (> 1.5 * n_features), do forward SFS
     if len(rfe_features) > n_features * 1.5:
@@ -1136,7 +1188,7 @@ def generate_dataset(
     # Save selected feature names
     os.makedirs(output_dir, exist_ok=True)
     feature_name_path = os.path.join(output_dir, f"selected_features_{version}.csv")
-    pd.Series(selected_features).to_csv(feature_name_path, index=False, header=False)
+    save_csv(pd.Series(selected_features), feature_name_path, index=False, header=False)
     print(f"💾 Saved selected feature names to {feature_name_path}")
     
     # 8. PCA Transformation (with preservation)
@@ -1150,8 +1202,8 @@ def generate_dataset(
         X_pca = pca.fit_transform(X_scaled)
         
         # Save transformation artifacts
-        dump(scaler, os.path.join(output_dir, f"scaler_{version}.joblib"))
-        dump(pca, os.path.join(output_dir, f"pca_{version}.joblib"))
+        dump_joblib(scaler, os.path.join(output_dir, f"scaler_{version}.joblib"))
+        dump_joblib(pca, os.path.join(output_dir, f"pca_{version}.joblib"))
         
         # Create readable PCA features
         pca_cols = [f"PC{i+1}" for i in range(X_pca.shape[1])]
@@ -1163,7 +1215,7 @@ def generate_dataset(
             columns=selected_features,
             index=pca_cols
         )
-        components_df.to_csv(os.path.join(output_dir, f"pca_components_{version}.csv"))
+        save_csv(components_df, os.path.join(output_dir, f"pca_components_{version}.csv"))
         
         # Save feature mapping
         feature_mapper = {
@@ -1173,7 +1225,7 @@ def generate_dataset(
             "scaler": f"scaler_{version}.joblib",
             "pca": f"pca_{version}.joblib"
         }
-        dump(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
+        dump_joblib(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
         metrics["pca_time"] = time.time() - pca_start
         print(f"📊 PCA reduced to {len(pca_cols)} components (95% variance)")
     else:
@@ -1184,7 +1236,7 @@ def generate_dataset(
             "features": list(selected_features),
             "imputation": "replace_inf_and_fillna(0)"
         }
-        dump(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
+        dump_joblib(feature_mapper, os.path.join(output_dir, f"feature_mapper_{version}.joblib"))
         metrics["pca_time"] = 0.0
         print("📊 Using original features without PCA")
     
@@ -1199,8 +1251,8 @@ def generate_dataset(
     y[y_num_cols] = y[y_num_cols].astype(np.float32)
 
     save_start = time.time()
-    X_final.to_parquet(X_path)
-    y.to_parquet(y_path)
+    save_parquet(X_final, X_path)
+    save_parquet(y, y_path)
     metrics["save_time"] = time.time() - save_start
 
     print(f"✅ Dataset saved to {output_dir}")
@@ -1227,7 +1279,7 @@ def generate_dataset(
         feature_reference["scaler"] = f"scaler_{version}.joblib"
         feature_reference["pca_model"] = f"pca_{version}.joblib"
     
-    dump(
+    dump_joblib(
         feature_reference,
         os.path.join(output_dir, f"feature_reference_{version}.joblib"),
     )
@@ -1250,7 +1302,7 @@ def generate_dataset(
 def load_feature_mapper(output_dir: str, version: str):
     """Load feature mapper for deployment"""
     mapper_path = os.path.join(output_dir, f"feature_mapper_{version}.joblib")
-    return load(mapper_path)
+    return load_joblib(mapper_path, output_dir)
 
 def prepare_inference_data(raw_data: pd.DataFrame, output_dir: str, version: str) -> pd.DataFrame:
     """
@@ -1277,8 +1329,8 @@ def prepare_inference_data(raw_data: pd.DataFrame, output_dir: str, version: str
     
     # 5. Apply transformations if PCA was used
     if feature_mapper["feature_set"] == "pca":
-        scaler = load(os.path.join(output_dir, feature_mapper["scaler"]))
-        pca = load(os.path.join(output_dir, feature_mapper["pca"]))
+        scaler = load_joblib(os.path.join(output_dir, feature_mapper["scaler"]), output_dir)
+        pca = load_joblib(os.path.join(output_dir, feature_mapper["pca"]), output_dir)
         
         X_scaled = scaler.transform(X)
         X_final = pd.DataFrame(
