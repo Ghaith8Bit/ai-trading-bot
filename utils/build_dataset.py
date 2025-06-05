@@ -678,8 +678,9 @@ def build_features(
 
             window = 1000
             df["regime"] = -1
+            n_components = 5
             bgm = BayesianGaussianMixture(
-                n_components=5,
+                n_components=n_components,
                 covariance_type="full",
                 weight_concentration_prior_type="dirichlet_process",
                 random_state=42,
@@ -691,7 +692,7 @@ def build_features(
                 end = i + 1
                 start = max(0, end - window)
                 hist = regime_data.iloc[start:end]
-                if hist.shape[0] < 2:
+                if hist.shape[0] < n_components:
                     regimes.append(-1)
                     continue
                 labels = bgm.fit_predict(hist)
