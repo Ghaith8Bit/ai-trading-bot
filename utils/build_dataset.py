@@ -691,6 +691,9 @@ def build_features(
                 end = i + 1
                 start = max(0, end - window)
                 hist = regime_data.iloc[start:end]
+                if hist.shape[0] < 2:
+                    regimes.append(-1)
+                    continue
                 labels = bgm.fit_predict(hist)
                 regimes.append(labels[-1])
 
@@ -822,7 +825,10 @@ def feature_selection(
 
         if tracking_uri:
             mlflow.set_tracking_uri(tracking_uri)
-        mlflow_run = mlflow.start_run()
+        if mlflow.active_run() is not None:
+            mlflow_run = mlflow.start_run(nested=True)
+        else:
+            mlflow_run = mlflow.start_run()
         mlflow.log_params({"task": task, "target_features": n_features})
     elif ml_logger == "wandb":
         import wandb
@@ -1081,7 +1087,10 @@ def generate_dataset(
 
         if tracking_uri:
             mlflow.set_tracking_uri(tracking_uri)
-        run_mlflow = mlflow.start_run()
+        if mlflow.active_run() is not None:
+            run_mlflow = mlflow.start_run(nested=True)
+        else:
+            run_mlflow = mlflow.start_run()
         mlflow.log_params({
             "task": task,
             "window_scheme": window_scheme,
