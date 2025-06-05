@@ -744,22 +744,31 @@ def create_labels_regression(df: pd.DataFrame, horizon: int = 3) -> pd.DataFrame
     return df
 
 def create_labels_classification(df: pd.DataFrame, horizon: int = 3) -> pd.DataFrame:
-    """Creates binary labels for long-only strategy"""
+    """Creates binary labels for long-only strategy."""
     df = df.copy()
     future_high = df["high"].shift(-horizon).rolling(horizon, min_periods=1).max()
-    
-    volatility = df["volatility_24"].clip(lower=0.001)
-    upper_threshold = df["close"] * (1 + 1.0 * volatility)
-    
+
+    if "volatility_24" in df.columns:
+        volatility = df["volatility_24"].clip(lower=0.001)
+    else:
+        r1 = df["close"].pct_change(1)
+        volatility = r1.rolling(24, min_periods=1).std().clip(lower=0.001)
+
+    if "rsi_14" not in df.columns:
+        from ta.momentum import RSIIndicator
+
+        df["rsi_14"] = RSIIndicator(df["close"], window=14).rsi()
+
+    upper_threshold = df["close"] * (1 + volatility)
     long_condition = (future_high > upper_threshold) & (df["rsi_14"] > 40)
-    
+
     if "volume_z_24" in df.columns:
         vol_z = df["volume_z_24"]
-        long_condition &= (vol_z > -0.5)
-    
+        long_condition &= vol_z > -0.5
+
     df["y_class"] = 0
     df.loc[long_condition, "y_class"] = 1
-    
+
     return df
 
 def feature_selection(
