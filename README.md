@@ -15,6 +15,7 @@ regression targets.
 - [Labels](#labels)
 - [Build Dataset Details](#build-dataset-details)
 - [Example Training](#example-training)
+- [Inference](#inference)
 
 ## Installation
 Clone the repository and install the required Python packages:
@@ -105,9 +106,17 @@ provided script or the accompanying notebook.
 
 ### Using the script
 
+Specify the dataset directory and version to load. Add `--grid-search` to enable
+hyperparameter tuning.
+
 ```bash
-python examples/train_classification.py
+python examples/train_classification.py \
+    --data-dir data/processed/classification \
+    --version v1 \
+    [--grid-search]
 ```
+The optional `--grid-search` flag performs a small hyperparameter search over
+`LogisticRegression` before training.
 
 ### Using the notebook
 
@@ -122,3 +131,23 @@ metrics.
 
 For a full explanation of every feature engineered by `build_dataset.py`, see
 [the dedicated reference](docs/build_dataset.md).
+
+## Inference
+
+After training a model you can generate predictions on new data using
+`examples/predict.py`. The script expects the trained model, the processed
+dataset directory and a raw CSV file containing the OHLCV data to score.
+
+```bash
+python examples/predict.py \
+    --model-path models/classification/bundle_v1.joblib \
+    --dataset-path data/processed/classification \
+    --csv-path data/raw/BTCUSDT_1h.csv \
+    --version v1 \
+    --output-csv predictions.csv
+```
+
+Behind the scenes `prepare_inference_data` loads the saved feature mapping via
+`load_feature_mapper` to apply the same feature engineering pipeline and optional
+PCA transformation used during dataset generation. This ensures the model
+receives data in exactly the same format as it was trained on.
