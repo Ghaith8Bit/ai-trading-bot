@@ -106,6 +106,7 @@ def build_features(
     extra_data: dict[str, pd.DataFrame] | None = None,
     cyclical: str = "sin",
     rbf_sigma: float = 1.0,
+    use_gpu: bool = False,
     window_scheme: str | Callable | None = None,
 ) -> pd.DataFrame:
     """
@@ -134,13 +135,27 @@ def build_features(
         "both" to include all cyclical features.
     rbf_sigma:
         Width parameter for radial basis function time features.
+    use_gpu:
+        Convert the dataframe to ``cudf`` and use RAPIDS rolling operations
+        where possible.
     window_scheme:
         Optional scheme for generating window sizes. Can be ``"fibonacci"``,
         ``"volatility"`` or a custom callable.
     """
-    df = df_raw.copy()
-    df = df[~df.index.duplicated(keep="first")]
-    df.sort_index(inplace=True)
+    if use_gpu:
+        try:
+            import cudf
+        except ImportError as e:
+            raise ImportError(
+                "cudf is required for GPU acceleration"
+            ) from e
+        df = cudf.DataFrame.from_pandas(df_raw.copy())
+        df = df[~df.index.duplicated(keep="first")]
+        df = df.sort_index()
+    else:
+        df = df_raw.copy()
+        df = df[~df.index.duplicated(keep="first")]
+        df.sort_index(inplace=True)
 
     # Validate presence of required columns
     required_cols = ["open", "high", "low", "close"]
@@ -185,10 +200,17 @@ def build_features(
                 f"rsi_14{suffix}",
             ]]
             features_to_add = features_to_add.reindex(df.index, method="ffill")
+            if use_gpu:
+                import cudf
+                features_to_add = cudf.DataFrame.from_pandas(features_to_add)
             hi_frames.append(features_to_add)
 
         if hi_frames:
-            df = df.join(pd.concat(hi_frames, axis=1))
+            if use_gpu:
+                import cudf
+                df = df.join(cudf.concat(hi_frames, axis=1))
+            else:
+                df = df.join(pd.concat(hi_frames, axis=1))
 
     # ======================
     # Core Price Transformations
@@ -270,29 +292,37 @@ def build_features(
             )
 
             feats = feats.reindex(df.index)
+            if use_gpu:
+                import cudf
+                feats = cudf.DataFrame.from_pandas(feats)
             extra_frames.append(feats)
 
         if extra_frames:
-            df = df.join(pd.concat(extra_frames, axis=1), how="left")
+            if use_gpu:
+                import cudf
+                df = df.join(cudf.concat(extra_frames, axis=1), how="left")
+            else:
+                df = df.join(pd.concat(extra_frames, axis=1), how="left")
 
     # ======================
     # Momentum Indicators
     # ======================
     momentum_cols = {}
+    df_pd = df.to_pandas() if use_gpu else df
     for w in _generate_windows([7, 14, 21], df, window_scheme):
-        momentum_cols[f"rsi_{w}"] = RSIIndicator(df["close"], window=w).rsi()
-        stoch = StochasticOscillator(df["high"], df["low"], df["close"], window=w)
+        momentum_cols[f"rsi_{w}"] = RSIIndicator(df_pd["close"], window=w).rsi()
+        stoch = StochasticOscillator(df_pd["high"], df_pd["low"], df_pd["close"], window=w)
         momentum_cols[f"stoch_k_{w}"] = stoch.stoch()
         momentum_cols[f"stoch_d_{w}"] = stoch.stoch_signal()
 
     for w in _generate_windows([10, 14, 20], df, window_scheme):
-        momentum_cols[f"roc_{w}"] = ROCIndicator(df["close"], window=w).roc()
+        momentum_cols[f"roc_{w}"] = ROCIndicator(df_pd["close"], window=w).roc()
 
     for w in _generate_windows([7, 14, 21], df, window_scheme):
         momentum_cols[f"willr_{w}"] = WilliamsRIndicator(
-            df["high"], df["low"], df["close"], lbp=w
+            df_pd["high"], df_pd["low"], df_pd["close"], lbp=w
         ).williams_r()
-        momentum_cols[f"stochrsi_{w}"] = StochRSIIndicator(df["close"], window=w).stochrsi()
+        momentum_cols[f"stochrsi_{w}"] = StochRSIIndicator(df_pd["close"], window=w).stochrsi()
 
     macd_pairs_base = [(12, 26), (10, 20), (8, 16)]
     macd_windows = _generate_windows(
@@ -307,37 +337,47 @@ def build_features(
     if not macd_pairs:
         macd_pairs = macd_pairs_base
     for fast, slow in macd_pairs:
-        macd = MACD(df["close"], window_slow=slow, window_fast=fast)
+        macd = MACD(df_pd["close"], window_slow=slow, window_fast=fast)
         momentum_cols[f"macd_{fast}_{slow}"] = macd.macd()
         momentum_cols[f"macd_signal_{fast}_{slow}"] = macd.macd_signal()
         momentum_cols[f"macd_hist_{fast}_{slow}"] = macd.macd_diff()
 
-    df = df.assign(**momentum_cols)
+    if use_gpu:
+        import cudf
+        df = df.join(cudf.DataFrame.from_pandas(pd.DataFrame(momentum_cols, index=df_pd.index)))
+    else:
+        df = df.assign(**momentum_cols)
 
     # ======================
     # Trend Indicators
     # ======================
     trend_cols = {}
+    df_pd = df.to_pandas() if use_gpu else df
     for w in _generate_windows([14, 20, 28], df, window_scheme):
-        adx = ADXIndicator(df["high"], df["low"], df["close"], window=w)
+        adx = ADXIndicator(df_pd["high"], df_pd["low"], df_pd["close"], window=w)
         trend_cols[f"adx_{w}"] = adx.adx()
         trend_cols[f"di_plus_{w}"] = adx.adx_pos()
         trend_cols[f"di_minus_{w}"] = adx.adx_neg()
-        trend_cols[f"cci_{w}"] = CCIIndicator(df["high"], df["low"], df["close"], window=w).cci()
+        trend_cols[f"cci_{w}"] = CCIIndicator(df_pd["high"], df_pd["low"], df_pd["close"], window=w).cci()
 
     for w in _generate_windows([14, 20, 28], df, window_scheme):
-        aroon = AroonIndicator(df["high"], df["low"], window=w)
+        aroon = AroonIndicator(df_pd["high"], df_pd["low"], window=w)
         trend_cols[f"aroon_up_{w}"] = aroon.aroon_up()
         trend_cols[f"aroon_down_{w}"] = aroon.aroon_down()
 
-    df = df.assign(**trend_cols)
+    if use_gpu:
+        import cudf
+        df = df.join(cudf.DataFrame.from_pandas(pd.DataFrame(trend_cols, index=df_pd.index)))
+    else:
+        df = df.assign(**trend_cols)
 
     # ======================
     # Volatility Indicators
     # ======================
     vol_ind_cols = {}
+    df_pd = df.to_pandas() if use_gpu else df
     for window in _generate_windows([10, 20, 50], df, window_scheme):
-        bb = BollingerBands(df["close"], window=window, window_dev=2)
+        bb = BollingerBands(df_pd["close"], window=window, window_dev=2)
         upper = bb.bollinger_hband()
         lower = bb.bollinger_lband()
         vol_ind_cols[f"bb_upper_{window}"] = upper
@@ -346,59 +386,67 @@ def build_features(
 
     for w in _generate_windows([7, 14, 21], df, window_scheme):
         vol_ind_cols[f"atr_{w}"] = AverageTrueRange(
-            df["high"], df["low"], df["close"], window=w
+            df_pd["high"], df_pd["low"], df_pd["close"], window=w
         ).average_true_range()
 
-        kc = KeltnerChannel(df["high"], df["low"], df["close"], window=w)
+        kc = KeltnerChannel(df_pd["high"], df_pd["low"], df_pd["close"], window=w)
         kc_upper = kc.keltner_channel_hband()
         kc_lower = kc.keltner_channel_lband()
         vol_ind_cols[f"kc_upper_{w}"] = kc_upper
         vol_ind_cols[f"kc_lower_{w}"] = kc_lower
         vol_ind_cols[f"kc_width_{w}"] = (kc_upper - kc_lower) / kc_upper.replace(0, np.nan)
 
-    df = df.assign(**vol_ind_cols)
+    if use_gpu:
+        import cudf
+        df = df.join(cudf.DataFrame.from_pandas(pd.DataFrame(vol_ind_cols, index=df_pd.index)))
+    else:
+        df = df.assign(**vol_ind_cols)
 
     # ======================
     # Volume Indicators
     # ======================
-    vol_cols = {
-        "obv": OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume(),
-        "adi": AccDistIndexIndicator(df["high"], df["low"], df["close"], df["volume"]).acc_dist_index(),
-    }
+    vol_cols = {}
+    df_pd = df.to_pandas() if use_gpu else df
+    vol_cols["obv"] = OnBalanceVolumeIndicator(df_pd["close"], df_pd["volume"]).on_balance_volume()
+    vol_cols["adi"] = AccDistIndexIndicator(df_pd["high"], df_pd["low"], df_pd["close"], df_pd["volume"]).acc_dist_index()
 
     for w in _generate_windows([14, 20], df, window_scheme):
         vol_cols[f"mfi_{w}"] = MFIIndicator(
-            df["high"], df["low"], df["close"], df["volume"], window=w
+            df_pd["high"], df_pd["low"], df_pd["close"], df_pd["volume"], window=w
         ).money_flow_index()
 
     for w in _generate_windows([12, 24, 48], df, window_scheme):
-        vol_roll_mean = df["volume"].rolling(w).mean()
-        vol_roll_std = df["volume"].rolling(w).std().replace(0, 1e-6)
-        vol_cols[f"volume_z_{w}"] = (df["volume"] - vol_roll_mean) / vol_roll_std
-        vol_cols[f"volume_roc_{w}"] = df["volume"].pct_change(w)
+        vol_roll_mean = df_pd["volume"].rolling(w).mean()
+        vol_roll_std = df_pd["volume"].rolling(w).std().replace(0, 1e-6)
+        vol_cols[f"volume_z_{w}"] = (df_pd["volume"] - vol_roll_mean) / vol_roll_std
+        vol_cols[f"volume_roc_{w}"] = df_pd["volume"].pct_change(w)
 
     vol_cols["vpd_5"] = (
-        (df["volume"] - df["volume"].rolling(5).mean())
-        * (df["close"] - df["close"].rolling(5).mean())
+        (df_pd["volume"] - df_pd["volume"].rolling(5).mean())
+        * (df_pd["close"] - df_pd["close"].rolling(5).mean())
     )
     vol_cols["vpd_20"] = (
-        (df["volume"] - df["volume"].rolling(20).mean())
-        * (df["close"] - df["close"].rolling(20).mean())
+        (df_pd["volume"] - df_pd["volume"].rolling(20).mean())
+        * (df_pd["close"] - df_pd["close"].rolling(20).mean())
     )
-
-    df = df.assign(**vol_cols)
+    if use_gpu:
+        import cudf
+        df = df.join(cudf.DataFrame.from_pandas(pd.DataFrame(vol_cols, index=df_pd.index)))
+    else:
+        df = df.assign(**vol_cols)
 
     # ======================
     # Optional Unsupervised Features
     # ======================
     if unsupervised:
-        unsup_df = pd.DataFrame(index=df.index)
+        df_pd = df.to_pandas() if use_gpu else df
+        unsup_df = pd.DataFrame(index=df_pd.index)
 
-        if len(df) >= 32:
+        if len(df_pd) >= 32:
             try:
                 import pywt
 
-                coeffs = pywt.swt(df["close"], "db1", level=2)
+                coeffs = pywt.swt(df_pd["close"], "db1", level=2)
                 for idx, (_, cD) in enumerate(coeffs, start=1):
                     unsup_df[f"wavelet_c{idx}"] = cD
             except Exception as e:
@@ -408,9 +456,9 @@ def build_features(
 
         ae_window = 10
         min_samples = 32
-        if len(df) >= max(ae_window + min_samples, 32):
+        if len(df_pd) >= max(ae_window + min_samples, 32):
             try:
-                close_series = df["close"]
+                close_series = df_pd["close"]
                 window_matrix = np.column_stack([
                     close_series.shift(i) for i in range(ae_window)
                 ])
@@ -418,7 +466,7 @@ def build_features(
                 hidden_size = 3
                 features = np.full((len(df), hidden_size), np.nan, dtype=np.float32)
 
-                for i in range(ae_window + min_samples, len(df) + 1):
+                for i in range(ae_window + min_samples, len(df_pd) + 1):
                     X_hist = window_matrix[: i - 1]
                     mask = ~np.isnan(X_hist).any(axis=1)
                     X_train = X_hist[mask]
@@ -453,7 +501,11 @@ def build_features(
             print("⚠️ Skipping autoencoder features: insufficient data")
 
         if not unsup_df.empty:
-            df = pd.concat([df, unsup_df], axis=1)
+            if use_gpu:
+                import cudf
+                df = cudf.concat([df, cudf.DataFrame.from_pandas(unsup_df)], axis=1)
+            else:
+                df = pd.concat([df, unsup_df], axis=1)
 
     # ======================
     # Time & Cyclical Features
@@ -621,6 +673,8 @@ def build_features(
     df[num_cols] = df[num_cols].astype(np.float32)
 
     print(f"✅ Built {len(df.columns)} features | {len(df)} samples")
+    if use_gpu:
+        df = df.to_pandas()
     return df
 
 def create_labels_regression(df: pd.DataFrame, horizon: int = 3) -> pd.DataFrame:
